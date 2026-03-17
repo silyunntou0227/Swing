@@ -29,29 +29,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Test J-Quants API directly
-        run: |
-          python3 -c "
-          import requests, os
-          mail = os.environ['JQUANTS_MAIL']
-          pw = os.environ['JQUANTS_PASSWORD']
-          print(f'Mail length: {len(mail)}, PW length: {len(pw)}')
-          resp = requests.post(
-              'https://api.jquants.com/v1/token/auth_user',
-              json={'mailaddress': mail, 'password': pw}
-          )
-          print(f'Status: {resp.status_code}')
-          print(f'Response: {resp.text}')
-          "
-        env:
-          JQUANTS_MAIL: ${{ secrets.JQUANTS_MAIL }}
-          JQUANTS_PASSWORD: ${{ secrets.JQUANTS_PASSWORD }}
-
       - name: Run stock scan
         run: python -m src.main
         env:
-          JQUANTS_MAIL: ${{ secrets.JQUANTS_MAIL }}
-          JQUANTS_PASSWORD: ${{ secrets.JQUANTS_PASSWORD }}
+          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}

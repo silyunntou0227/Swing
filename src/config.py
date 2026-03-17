@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 # ============================================================
 # API認証情報（環境変数から取得）
 # ============================================================
+JQUANTS_API_KEY = os.environ.get("JQUANTS_API_KEY", "")
+# V1互換用（非推奨）
 JQUANTS_MAIL = os.environ.get("JQUANTS_MAIL", "")
 JQUANTS_PASSWORD = os.environ.get("JQUANTS_PASSWORD", "")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
