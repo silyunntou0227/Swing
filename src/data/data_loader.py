@@ -63,7 +63,10 @@ class DataLoader:
         data = MarketData()
 
         # === 必須データ（J-Quants） ===
-        data.stocks = self._jquants.fetch_listed_stocks()
+        try:
+            data.stocks = self._jquants.fetch_listed_stocks()
+        except Exception as e:
+            logger.warning(f"上場銘柄一覧取得失敗（続行）: {e}")
         data.prices = self._load_prices()
         data.financials = self._load_financials()
 
