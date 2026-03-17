@@ -33,9 +33,10 @@ from src.data.margin_client import MarginClient
 from src.config import JQUANTS_API_KEY
 from src.utils.logging_config import logger
 
-# GitHub Actions 無料枠で安全に完了するための銘柄上限
-# プライム(~1800) + スタンダード上位 で十分なカバレッジ
-MAX_STOCKS_FOR_DOWNLOAD = 2000
+# GitHub Actions 無料枠（2コア, 60分制限）で安全に完了するための銘柄上限
+# プライム全銘柄(~1800) でスイングトレードの主要対象をカバー
+# ローカル実行では MAX_STOCKS_FOR_DOWNLOAD=0 で全銘柄対応可
+MAX_STOCKS_FOR_DOWNLOAD = 1200
 
 
 @dataclass

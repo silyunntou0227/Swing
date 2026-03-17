@@ -76,7 +76,6 @@ class YahooClient:
                 df = self._yf.download(
                     tickers=chunk,
                     period=period,
-                    group_by="ticker",
                     auto_adjust=True,
                     threads=True,
                     progress=False,
@@ -120,14 +119,9 @@ class YahooClient:
         """yfinance.download のマルチティッカー結果をフラット化
 
         yfinance のバージョンによって戻り値の形式が異なるため、
-        複数パターンに対応する:
-        - v0.2.31+: MultiIndex columns (ticker, OHLCV) — group_by='ticker'
-        - v0.2.36+: MultiIndex columns (Price, Ticker) — 新フォーマット
-        - 1銘柄の場合: 通常のシングルインデックス
+        複数パターンに対応する。stack() を使わず xs() で安全に処理。
         """
         frames = []
-
-        # --- ケース判定 ---
         has_multiindex = isinstance(df.columns, pd.MultiIndex)
 
         # 1銘柄のみ or マルチインデックスなし → シンプル処理
@@ -135,7 +129,6 @@ class YahooClient:
             if len(tickers) == 1:
                 code = tickers[0].replace(".T", "")
                 temp = df.copy().reset_index()
-                # MultiIndex columns を flatten
                 if has_multiindex:
                     temp.columns = [
                         c[0] if isinstance(c, tuple) else c
@@ -149,63 +142,43 @@ class YahooClient:
                     frames.append(temp)
             return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
-        # --- MultiIndex の構造を判定 ---
-        level0_values = list(df.columns.get_level_values(0).unique())
-        level1_values = list(df.columns.get_level_values(1).unique())
+        # --- MultiIndex: ティッカーごとに xs() で安全に抽出 ---
+        level0_values = set(str(v) for v in df.columns.get_level_values(0).unique())
+        level1_values = set(str(v) for v in df.columns.get_level_values(1).unique())
 
-        # パターン判定: level0 がティッカーか、price列名か
+        # level0 が価格列名か、ティッカー名かを判定
         price_names = {"Open", "High", "Low", "Close", "Volume",
                        "open", "high", "low", "close", "volume",
                        "Adj Close", "Price"}
-        level0_is_price = any(str(v) in price_names for v in level0_values[:5])
+        level0_is_price = bool(level0_values & price_names)
 
-        if level0_is_price:
-            # 新フォーマット: columns = (Price, Ticker)
-            # stack で Ticker をインデックスに → フラット化
-            try:
-                stacked = df.stack(level=1, future_stack=True).reset_index()
-                # level_1 が Ticker 列になる
-                ticker_col = None
-                for col in stacked.columns:
-                    if col in ("level_1", "Ticker", "ticker"):
-                        ticker_col = col
-                        break
-                if ticker_col is None:
-                    # columns名を推測
-                    for col in stacked.columns:
-                        sample = str(stacked[col].iloc[0]) if len(stacked) > 0 else ""
-                        if sample.endswith(".T"):
-                            ticker_col = col
-                            break
-
-                if ticker_col:
-                    stacked["Code"] = stacked[ticker_col].astype(str).str.replace(".T", "", regex=False)
-                    if "Date" not in stacked.columns and "level_0" in stacked.columns:
-                        stacked = stacked.rename(columns={"level_0": "Date"})
-                    stacked = self._normalize_columns(stacked)
-                    if "Close" in stacked.columns:
-                        stacked = stacked.dropna(subset=["Close"])
-                    if not stacked.empty:
-                        return stacked
-            except Exception as e:
-                logger.debug(f"Yahoo Finance: stack方式失敗、個別取得に切替: {e}")
-
-        # 従来フォーマット: columns = (Ticker, Price)
         for ticker in tickers:
             code = ticker.replace(".T", "")
             try:
-                # ティッカーがlevel0にあるか確認
-                found = False
-                for candidate_key in [ticker, ticker.upper(), code + ".T"]:
-                    if candidate_key in level0_values:
-                        sub = df[candidate_key].copy()
-                        found = True
-                        break
-
-                if not found:
-                    continue
+                if level0_is_price:
+                    # 新フォーマット: columns = (Price, Ticker)
+                    # level=1 でティッカーを指定して抽出
+                    key = None
+                    for candidate in [ticker, ticker.upper()]:
+                        if candidate in level1_values:
+                            key = candidate
+                            break
+                    if key is None:
+                        continue
+                    sub = df.xs(key, level=1, axis=1).copy()
+                else:
+                    # 従来フォーマット: columns = (Ticker, Price)
+                    key = None
+                    for candidate in [ticker, ticker.upper()]:
+                        if candidate in level0_values:
+                            key = candidate
+                            break
+                    if key is None:
+                        continue
+                    sub = df.xs(key, level=0, axis=1).copy()
 
                 sub = sub.reset_index()
+
                 # flatten columns if still MultiIndex
                 if isinstance(sub.columns, pd.MultiIndex):
                     sub.columns = [
@@ -219,7 +192,6 @@ class YahooClient:
                 sub["Code"] = code
                 sub = self._normalize_columns(sub)
 
-                # NaN行を除去
                 if "Close" in sub.columns:
                     sub = sub.dropna(subset=["Close"])
 
