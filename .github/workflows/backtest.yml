@@ -1,0 +1,37 @@
+name: Backtest (3-Day Verification)
+
+on:
+  workflow_dispatch:
+    inputs:
+      cutoff_date:
+        description: 'Screening date (YYYY-MM-DD)'
+        required: false
+        default: '2026-03-13'
+      check_date:
+        description: 'Verification date (YYYY-MM-DD)'
+        required: false
+        default: '2026-03-18'
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run backtest
+        run: python backtest_3days.py
+        env:
+          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          CUTOFF_DATE: ${{ inputs.cutoff_date }}
+          CHECK_DATE: ${{ inputs.check_date }}
