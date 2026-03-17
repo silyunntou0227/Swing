@@ -3,6 +3,14 @@
 import os
 from dataclasses import dataclass, field
 
+# ローカル実行時に .env ファイルから環境変数を自動読み込み
+# GitHub Actions では .env が存在しないため無視される
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv が無い環境（GitHub Actions）ではスキップ
+
 
 # ============================================================
 # API認証情報（環境変数から取得）

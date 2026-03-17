@@ -119,37 +119,100 @@ class YahooClient:
     ) -> pd.DataFrame:
         """yfinance.download のマルチティッカー結果をフラット化
 
-        yfinance.download(group_by='ticker') の結果は
-        マルチカラムインデックス [(ticker, OHLCV)] になる。
-        これを Code, Date, Open, ... の形式に変換する。
+        yfinance のバージョンによって戻り値の形式が異なるため、
+        複数パターンに対応する:
+        - v0.2.31+: MultiIndex columns (ticker, OHLCV) — group_by='ticker'
+        - v0.2.36+: MultiIndex columns (Price, Ticker) — 新フォーマット
+        - 1銘柄の場合: 通常のシングルインデックス
         """
         frames = []
 
-        # 1銘柄のみの場合はマルチインデックスにならない
-        if len(tickers) == 1:
-            ticker = tickers[0]
-            code = ticker.replace(".T", "")
-            temp = df.copy().reset_index()
-            if "Date" not in temp.columns and "index" in temp.columns:
-                temp = temp.rename(columns={"index": "Date"})
-            temp["Code"] = code
-            # カラム名を統一
-            temp = self._normalize_columns(temp)
-            if not temp.empty:
-                frames.append(temp)
+        # --- ケース判定 ---
+        has_multiindex = isinstance(df.columns, pd.MultiIndex)
+
+        # 1銘柄のみ or マルチインデックスなし → シンプル処理
+        if len(tickers) == 1 or not has_multiindex:
+            if len(tickers) == 1:
+                code = tickers[0].replace(".T", "")
+                temp = df.copy().reset_index()
+                # MultiIndex columns を flatten
+                if has_multiindex:
+                    temp.columns = [
+                        c[0] if isinstance(c, tuple) else c
+                        for c in temp.columns
+                    ]
+                if "Date" not in temp.columns and "index" in temp.columns:
+                    temp = temp.rename(columns={"index": "Date"})
+                temp["Code"] = code
+                temp = self._normalize_columns(temp)
+                if not temp.empty:
+                    frames.append(temp)
             return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
+        # --- MultiIndex の構造を判定 ---
+        level0_values = list(df.columns.get_level_values(0).unique())
+        level1_values = list(df.columns.get_level_values(1).unique())
+
+        # パターン判定: level0 がティッカーか、price列名か
+        price_names = {"Open", "High", "Low", "Close", "Volume",
+                       "open", "high", "low", "close", "volume",
+                       "Adj Close", "Price"}
+        level0_is_price = any(str(v) in price_names for v in level0_values[:5])
+
+        if level0_is_price:
+            # 新フォーマット: columns = (Price, Ticker)
+            # stack で Ticker をインデックスに → フラット化
+            try:
+                stacked = df.stack(level=1, future_stack=True).reset_index()
+                # level_1 が Ticker 列になる
+                ticker_col = None
+                for col in stacked.columns:
+                    if col in ("level_1", "Ticker", "ticker"):
+                        ticker_col = col
+                        break
+                if ticker_col is None:
+                    # columns名を推測
+                    for col in stacked.columns:
+                        sample = str(stacked[col].iloc[0]) if len(stacked) > 0 else ""
+                        if sample.endswith(".T"):
+                            ticker_col = col
+                            break
+
+                if ticker_col:
+                    stacked["Code"] = stacked[ticker_col].astype(str).str.replace(".T", "", regex=False)
+                    if "Date" not in stacked.columns and "level_0" in stacked.columns:
+                        stacked = stacked.rename(columns={"level_0": "Date"})
+                    stacked = self._normalize_columns(stacked)
+                    if "Close" in stacked.columns:
+                        stacked = stacked.dropna(subset=["Close"])
+                    if not stacked.empty:
+                        return stacked
+            except Exception as e:
+                logger.debug(f"Yahoo Finance: stack方式失敗、個別取得に切替: {e}")
+
+        # 従来フォーマット: columns = (Ticker, Price)
         for ticker in tickers:
             code = ticker.replace(".T", "")
             try:
-                if ticker in df.columns.get_level_values(0):
-                    sub = df[ticker].copy()
-                elif ticker.upper() in df.columns.get_level_values(0):
-                    sub = df[ticker.upper()].copy()
-                else:
+                # ティッカーがlevel0にあるか確認
+                found = False
+                for candidate_key in [ticker, ticker.upper(), code + ".T"]:
+                    if candidate_key in level0_values:
+                        sub = df[candidate_key].copy()
+                        found = True
+                        break
+
+                if not found:
                     continue
 
                 sub = sub.reset_index()
+                # flatten columns if still MultiIndex
+                if isinstance(sub.columns, pd.MultiIndex):
+                    sub.columns = [
+                        c[0] if isinstance(c, tuple) else c
+                        for c in sub.columns
+                    ]
+
                 if "Date" not in sub.columns and "index" in sub.columns:
                     sub = sub.rename(columns={"index": "Date"})
 
