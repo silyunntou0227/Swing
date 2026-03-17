@@ -189,8 +189,8 @@ class MultiFactorScorer:
         score = 50.0
 
         macd = last.get("MACD")
-        signal = last.get("MACDs")
-        hist = last.get("MACDh")
+        signal = last.get("MACD_Signal")
+        hist = last.get("MACD_Hist")
 
         if pd.notna(macd) and pd.notna(signal):
             if direction == "buy":
@@ -200,7 +200,7 @@ class MultiFactorScorer:
                     score += 10
                     # ヒストグラム増加中
                     if len(df) >= 2:
-                        prev_hist = df.iloc[-2].get("MACDh", 0)
+                        prev_hist = df.iloc[-2].get("MACD_Hist", 0)
                         if pd.notna(prev_hist) and hist > prev_hist:
                             score += 10
             else:
@@ -262,10 +262,10 @@ class MultiFactorScorer:
         score = 50.0
         close = last.get("Close", 0)
 
-        tenkan = last.get("ISA_9")  # 転換線
-        kijun = last.get("ISB_26")   # 基準線
-        senkou_a = last.get("ITS_9")  # 先行スパンA
-        senkou_b = last.get("IKS_26")  # 先行スパンB
+        tenkan = last.get("Ichimoku_Tenkan")  # 転換線
+        kijun = last.get("Ichimoku_Kijun")   # 基準線
+        senkou_a = last.get("Ichimoku_SenkouA")  # 先行スパンA
+        senkou_b = last.get("Ichimoku_SenkouB")  # 先行スパンB
 
         if direction == "buy":
             if pd.notna(tenkan) and pd.notna(kijun):
