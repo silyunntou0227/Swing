@@ -52,7 +52,7 @@ MARGIN_RATIO_MAX = 5.0  # 信用倍率上限
 # ============================================================
 # トレンド・流動性フィルタ（Layer 2）
 # ============================================================
-ADX_MIN = 20.0
+ADX_MIN = 25.0  # 20→25: 研究に基づきトレンド確認精度向上
 VOLUME_AVG_MIN = 50000  # 20日平均出来高（株）
 TURNOVER_MIN = 50_000_000  # 売買代金（円/日）
 
@@ -69,12 +69,18 @@ SMA_SHORT = 5
 SMA_MEDIUM = 25
 SMA_LONG = 75
 SMA_VERY_LONG = 200
-EMA_SHORT = 12
-EMA_LONG = 26
-MACD_SIGNAL = 9
-RSI_PERIOD = 14
+# MACD: Kang(2021)論文に基づき日経225最適パラメータ (4,22,3) を採用
+EMA_SHORT = 4    # 12→4: 日本市場の速い周期に対応
+EMA_LONG = 22    # 26→22: 日経225最適化
+MACD_SIGNAL = 3  # 9→3: 偽シグナル削減
+
+# RSI: Connors RSI研究に基づき短期RSI(2)を追加、従来RSI(14)も併用
+RSI_PERIOD = 14          # 従来RSI（中長期トレンド確認用）
+RSI_PERIOD_SHORT = 2     # Connors RSI（短期エントリー用）
 RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
+RSI_SHORT_OVERSOLD = 10  # RSI(2)用: 極端な売られすぎ
+RSI_SHORT_OVERBOUGHT = 90  # RSI(2)用: 極端な買われすぎ
 STOCH_K = 14
 STOCH_D = 3
 STOCH_SMOOTH = 3
@@ -132,18 +138,30 @@ MACRO_SCORE_MIN = -5
 # ============================================================
 # スコアリングウェイト
 # ============================================================
+# 保有期間予測パラメータ
+MAX_HOLDING_DAYS = 10         # 最大保有日数
+TRAILING_STOP_ATR_MULT = 2.5  # トレーリングストップ: ATR×2.5
+PROFIT_TARGET_ATR_MULT = 3.0  # 利確目標: ATR×3.0
+PARTIAL_EXIT_ATR_MULT = 1.5   # 部分利確: ATR×1.5（50%決済）
+
+# ============================================================
+# スコアリングウェイト（研究ベース最適化）
+# ============================================================
+# 多因子モデル研究に基づきトレンド・モメンタム重視に再配分
+# トレンド系(trend+ichimoku): 35%, モメンタム系(macd+rsi): 25%
+# ボリューム系: 15%, ファンダ: 10%, その他: 15%
 @dataclass
 class ScoringWeights:
-    trend: float = 0.18
-    macd: float = 0.12
-    volume: float = 0.12
-    fundamental: float = 0.13
-    rsi: float = 0.08
-    ichimoku: float = 0.08
-    pattern: float = 0.08
-    risk_reward: float = 0.05
-    news_disclosure: float = 0.10
-    margin_supply: float = 0.06
+    trend: float = 0.22       # 18→22: トレンドが最強の予測因子
+    macd: float = 0.15        # 12→15: モメンタム重視
+    volume: float = 0.12      # 据え置き
+    fundamental: float = 0.10  # 13→10: 短期では影響小
+    rsi: float = 0.10         # 8→10: Connors RSI追加で精度向上
+    ichimoku: float = 0.13    # 8→13: トレンドフィルタとして有効
+    pattern: float = 0.05     # 8→5: 学術研究で単独効果は限定的
+    risk_reward: float = 0.05  # 据え置き
+    news_disclosure: float = 0.05  # 10→5: データ取得制限あり
+    margin_supply: float = 0.03    # 6→3: データ取得制限あり
 
     def validate(self) -> bool:
         total = sum([

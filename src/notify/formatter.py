@@ -48,6 +48,12 @@ class ScoredCandidate:
     news_summary: str = ""
     news_sentiment: str = ""
 
+    # 保有期間予測
+    recommended_hold_days: int = 0  # 推奨保有日数
+    exit_strategy: str = ""  # 出口戦略の説明
+    partial_exit_price: float = 0.0  # 部分利確価格（50%決済）
+    trailing_stop_price: float = 0.0  # トレーリングストップ価格
+
     # リスク管理
     stop_loss: float = 0.0
     take_profit: float = 0.0
@@ -170,6 +176,21 @@ class ResultFormatter:
             fields.append({
                 "name": "📰 ニュース",
                 "value": news_text,
+                "inline": False,
+            })
+
+        # 保有期間予測
+        if c.recommended_hold_days > 0:
+            hold_parts = [f"推奨保有: {c.recommended_hold_days}日"]
+            if c.partial_exit_price > 0:
+                hold_parts.append(f"部分利確: ¥{c.partial_exit_price:,.0f}")
+            if c.trailing_stop_price > 0:
+                hold_parts.append(f"トレーリングSL: ¥{c.trailing_stop_price:,.0f}")
+            if c.exit_strategy:
+                hold_parts.append(c.exit_strategy)
+            fields.append({
+                "name": "出口戦略",
+                "value": " | ".join(hold_parts),
                 "inline": False,
             })
 

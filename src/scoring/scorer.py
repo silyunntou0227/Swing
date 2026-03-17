@@ -6,7 +6,11 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from src.config import SCORING_WEIGHTS, MACRO_SCORE_MAX, MACRO_SCORE_MIN
+from src.config import (
+    SCORING_WEIGHTS, MACRO_SCORE_MAX, MACRO_SCORE_MIN,
+    MAX_HOLDING_DAYS, TRAILING_STOP_ATR_MULT, PROFIT_TARGET_ATR_MULT,
+    PARTIAL_EXIT_ATR_MULT,
+)
 from src.data.data_loader import MarketData
 from src.data.margin_client import MarginClient
 from src.screening.fundamental import calculate_fundamental_score
@@ -154,6 +158,9 @@ class MultiFactorScorer:
         sc.macro_adjustment = macro_score
         sc.total_score = max(0, min(100, base_score + macro_score))
 
+        # === 保有期間予測 ===
+        self._predict_holding_period(sc, df, last, direction)
+
         return sc
 
     def _calc_trend_score(self, df: pd.DataFrame, last: pd.Series, direction: str) -> float:
@@ -235,25 +242,52 @@ class MultiFactorScorer:
         return min(100, max(0, score))
 
     def _calc_rsi_score(self, last: pd.Series, direction: str) -> float:
-        """RSIスコア（0-100）"""
-        score = 50.0
-        rsi = last.get("RSI")
+        """RSIスコア（0-100）— RSI(14) + Connors RSI(2) 統合
 
-        if pd.notna(rsi):
+        RSI(14): 中長期トレンド方向確認
+        RSI(2): 短期平均回帰エントリータイミング（Connors研究に基づく）
+        """
+        score = 50.0
+        rsi14 = last.get("RSI")
+        rsi2 = last.get("RSI_short")
+
+        # --- RSI(14): トレンド方向の確認（ウェイト40%）---
+        if pd.notna(rsi14):
             if direction == "buy":
-                if 30 <= rsi <= 45:
-                    score += 30  # 売られすぎから回復
-                elif 45 < rsi <= 60:
-                    score += 15  # 中立〜やや強
-                elif rsi > 70:
-                    score -= 15  # 買われすぎ
+                if 30 <= rsi14 <= 45:
+                    score += 12  # 売られすぎから回復
+                elif 45 < rsi14 <= 60:
+                    score += 6   # 中立〜やや強
+                elif rsi14 > 70:
+                    score -= 8   # 買われすぎ
             else:
-                if 55 <= rsi <= 70:
-                    score += 30
-                elif rsi > 70:
-                    score += 15
-                elif rsi < 30:
-                    score -= 15
+                if 55 <= rsi14 <= 70:
+                    score += 12
+                elif rsi14 > 70:
+                    score += 6
+                elif rsi14 < 30:
+                    score -= 8
+
+        # --- RSI(2): 短期エントリータイミング（ウェイト60%）---
+        if pd.notna(rsi2):
+            if direction == "buy":
+                if rsi2 < 5:
+                    score += 25   # 極端な売られすぎ = 最強シグナル
+                elif rsi2 < 10:
+                    score += 18   # 売られすぎ = 強シグナル
+                elif rsi2 < 20:
+                    score += 8    # やや売られすぎ
+                elif rsi2 > 90:
+                    score -= 10   # 買われすぎ
+            else:
+                if rsi2 > 95:
+                    score += 25
+                elif rsi2 > 90:
+                    score += 18
+                elif rsi2 > 80:
+                    score += 8
+                elif rsi2 < 10:
+                    score -= 10
 
         return min(100, max(0, score))
 
@@ -318,6 +352,84 @@ class MultiFactorScorer:
                 score -= 10  # ボラティリティ過大
 
         return min(100, max(0, score))
+
+    def _predict_holding_period(
+        self,
+        sc: ScoredCandidate,
+        df: pd.DataFrame,
+        last: pd.Series,
+        direction: str,
+    ) -> None:
+        """保有期間予測（ATRベース + シグナルタイプ別）
+
+        研究に基づくハイブリッド出口戦略:
+        - ATRトレーリングストップ（2.5×ATR）
+        - 利確目標（3.0×ATR）
+        - 部分利確（1.5×ATR で50%決済）
+        - 最大保有10日（グリッドサーチ最適化論文に基づく）
+        - RSI正常化で出口（RSI(2)が50を超えたら）
+        """
+        atr = last.get("ATR")
+        close = last.get("Close", 0)
+        rsi2 = last.get("RSI_short")
+
+        if not pd.notna(atr) or atr <= 0 or close <= 0:
+            sc.recommended_hold_days = 7  # デフォルト
+            sc.exit_strategy = "ATRデータなし: 7日で見直し"
+            return
+
+        # シグナルタイプ別の推奨保有期間
+        signals_str = " ".join(sc.signals)
+        is_mean_reversion = (
+            pd.notna(rsi2) and (rsi2 < 10 or rsi2 > 90)
+            or "RSI2" in signals_str
+            or "RSI_oversold" in signals_str
+        )
+        is_breakout = (
+            "雲上抜け" in signals_str
+            or "ゴールデンクロス" in signals_str
+            or "三役好転" in signals_str
+        )
+        is_momentum = (
+            "MACD" in signals_str
+            or "パーフェクトオーダー" in signals_str
+        )
+
+        if is_mean_reversion:
+            hold_days = 3  # 平均回帰: 2-5日
+            strategy_type = "平均回帰(RSI)"
+        elif is_breakout:
+            hold_days = 8  # ブレイクアウト: 7-10日
+            strategy_type = "ブレイクアウト"
+        elif is_momentum:
+            hold_days = 7  # モメンタム: 5-10日
+            strategy_type = "モメンタム"
+        else:
+            hold_days = 5  # その他: 5日
+            strategy_type = "標準"
+
+        hold_days = min(hold_days, MAX_HOLDING_DAYS)
+        sc.recommended_hold_days = hold_days
+
+        # ATRベースの価格目標
+        if direction == "buy":
+            sc.trailing_stop_price = round(close - atr * TRAILING_STOP_ATR_MULT, 1)
+            sc.partial_exit_price = round(close + atr * PARTIAL_EXIT_ATR_MULT, 1)
+            tp = round(close + atr * PROFIT_TARGET_ATR_MULT, 1)
+            sl_pct = (sc.trailing_stop_price - close) / close * 100
+            tp_pct = (tp - close) / close * 100
+        else:
+            sc.trailing_stop_price = round(close + atr * TRAILING_STOP_ATR_MULT, 1)
+            sc.partial_exit_price = round(close - atr * PARTIAL_EXIT_ATR_MULT, 1)
+            tp = round(close - atr * PROFIT_TARGET_ATR_MULT, 1)
+            sl_pct = (sc.trailing_stop_price - close) / close * 100
+            tp_pct = (tp - close) / close * 100
+
+        sc.exit_strategy = (
+            f"{strategy_type} | "
+            f"SL {sl_pct:+.1f}% TP {tp_pct:+.1f}% | "
+            f"最大{hold_days}日"
+        )
 
     def _calc_margin_score(
         self, code: str, margin_data: pd.DataFrame, direction: str

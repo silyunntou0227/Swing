@@ -16,6 +16,9 @@ from src.config import (
     RSI_OVERBOUGHT,
     RSI_OVERSOLD,
     RSI_PERIOD,
+    RSI_PERIOD_SHORT,
+    RSI_SHORT_OVERSOLD,
+    RSI_SHORT_OVERBOUGHT,
     SIGNAL_LOOKBACK_DAYS,
     STOCH_D,
     STOCH_K,
@@ -29,10 +32,18 @@ from src.config import (
 
 
 def calculate_rsi(df: pd.DataFrame) -> pd.DataFrame:
-    """RSI (Relative Strength Index) を算出して列に追加する。"""
+    """RSI を算出して列に追加する。
+
+    RSI(14): 従来の中長期トレンド確認用
+    RSI(2): Connors RSI — 短期平均回帰エントリー用（学術的に最も検証済み）
+    """
     df = df.copy()
     df["RSI"] = ta_lib.momentum.RSIIndicator(
         df["Close"], window=RSI_PERIOD
+    ).rsi()
+    # Connors RSI(2): 短期の極端な売られすぎ/買われすぎを検出
+    df["RSI_short"] = ta_lib.momentum.RSIIndicator(
+        df["Close"], window=RSI_PERIOD_SHORT
     ).rsi()
     return df
 
@@ -180,12 +191,43 @@ def _detect_stochastic_divergence(
 # ============================================================
 
 
+def detect_connors_rsi_signals(df: pd.DataFrame) -> pd.DataFrame:
+    """Connors RSI(2) のシグナルを検出する。
+
+    RSI(2) < 10: 極端な売られすぎ → 買いシグナル
+    RSI(2) > 90: 極端な買われすぎ → 売りシグナル
+    200日SMAフィルタ: 長期トレンド方向と一致する場合のみシグナル発出
+    """
+    df = df.copy()
+    if "RSI_short" not in df.columns:
+        df = calculate_rsi(df)
+
+    rsi2 = df["RSI_short"]
+
+    # RSI(2) が極端値からの反転
+    df["RSI2_oversold"] = rsi2 < RSI_SHORT_OVERSOLD  # < 10
+    df["RSI2_overbought"] = rsi2 > RSI_SHORT_OVERBOUGHT  # > 90
+
+    # SMA200トレンドフィルタ（Connors研究推奨）
+    if "SMA_200" in df.columns:
+        above_sma200 = df["Close"] > df["SMA_200"]
+        below_sma200 = df["Close"] < df["SMA_200"]
+        df["RSI2_buy_signal"] = df["RSI2_oversold"] & above_sma200
+        df["RSI2_sell_signal"] = df["RSI2_overbought"] & below_sma200
+    else:
+        df["RSI2_buy_signal"] = df["RSI2_oversold"]
+        df["RSI2_sell_signal"] = df["RSI2_overbought"]
+
+    return df
+
+
 def calculate_all_oscillators(df: pd.DataFrame) -> pd.DataFrame:
     """全オシレーター指標を一括で算出して列に追加する。"""
     df = calculate_rsi(df)
     df = calculate_stochastic(df)
     df = detect_rsi_signals(df)
     df = detect_rsi_divergence(df)
+    df = detect_connors_rsi_signals(df)
     df = detect_stochastic_signals(df)
     df = _detect_stochastic_divergence(df)
     return df
@@ -198,6 +240,8 @@ def get_oscillator_signals(df: pd.DataFrame) -> List[str]:
         "RSI_overbought_cross",
         "RSI_bull_divergence",
         "RSI_bear_divergence",
+        "RSI2_buy_signal",
+        "RSI2_sell_signal",
         "STOCH_bull_cross",
         "STOCH_bear_cross",
         "STOCH_bull_divergence",
