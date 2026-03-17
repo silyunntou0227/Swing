@@ -29,12 +29,20 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Debug info
+      - name: Test J-Quants API directly
         run: |
-          echo "JQUANTS_MAIL length: ${#JQUANTS_MAIL}"
-          echo "JQUANTS_PASSWORD length: ${#JQUANTS_PASSWORD}"
-          echo "JQUANTS_MAIL first 3 chars: ${JQUANTS_MAIL:0:3}***"
-          pip show jquants-api-client | grep -E "^(Name|Version)"
+          python3 -c "
+          import requests, os
+          mail = os.environ['JQUANTS_MAIL']
+          pw = os.environ['JQUANTS_PASSWORD']
+          print(f'Mail length: {len(mail)}, PW length: {len(pw)}')
+          resp = requests.post(
+              'https://api.jquants.com/v1/token/auth_user',
+              json={'mailaddress': mail, 'password': pw}
+          )
+          print(f'Status: {resp.status_code}')
+          print(f'Response: {resp.text}')
+          "
         env:
           JQUANTS_MAIL: ${{ secrets.JQUANTS_MAIL }}
           JQUANTS_PASSWORD: ${{ secrets.JQUANTS_PASSWORD }}
