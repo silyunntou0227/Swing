@@ -35,6 +35,12 @@ COLUMN_MAP = {
     "規模区分": "ScaleCategory",
 }
 
+# 除外対象キーワード
+EXCLUDE_KEYWORDS = ["ETF", "REIT", "ETN", "インフラファンド", "出資証券"]
+
+# 対象市場
+TARGET_MARKETS = ["プライム", "スタンダード", "グロース"]
+
 
 def fetch_jpx_stock_list() -> pd.DataFrame:
     """JPX公式サイトから全上場銘柄一覧を取得
@@ -71,10 +77,14 @@ def fetch_jpx_stock_list() -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def get_tradeable_codes(df: pd.DataFrame) -> list[str]:
+def get_tradeable_codes(df: pd.DataFrame, max_stocks: int = 0) -> list[str]:
     """売買対象となる銘柄コードのリストを返す
 
     ETF/REIT/ETN等を除外し、プライム/スタンダード/グロース市場の普通株のみ。
+
+    Args:
+        df: 銘柄一覧DataFrame
+        max_stocks: 最大銘柄数（0=制限なし）。大規模市場から優先的に選択。
     """
     if df.empty or "Code" not in df.columns:
         return []
@@ -83,24 +93,38 @@ def get_tradeable_codes(df: pd.DataFrame) -> list[str]:
 
     # 市場区分フィルタ（プライム・スタンダード・グロースのみ）
     if "MarketCodeName" in filtered.columns:
-        target_markets = ["プライム", "スタンダード", "グロース"]
         mask = filtered["MarketCodeName"].apply(
-            lambda x: any(m in str(x) for m in target_markets)
+            lambda x: any(m in str(x) for m in TARGET_MARKETS)
         )
         filtered = filtered[mask]
 
     # ETF/REIT等を除外
-    exclude_keywords = ["ETF", "REIT", "ETN", "インフラファンド", "出資証券"]
     if "MarketCodeName" in filtered.columns:
-        for kw in exclude_keywords:
+        for kw in EXCLUDE_KEYWORDS:
             filtered = filtered[
                 ~filtered["MarketCodeName"].str.contains(kw, na=False)
             ]
     if "Sector17CodeName" in filtered.columns:
-        for kw in exclude_keywords:
+        for kw in EXCLUDE_KEYWORDS:
             filtered = filtered[
                 ~filtered["Sector17CodeName"].str.contains(kw, na=False)
             ]
+
+    # max_stocks が指定されている場合、プライム→スタンダード→グロースの優先順で絞る
+    if max_stocks > 0 and "MarketCodeName" in filtered.columns:
+        priority_order = ["プライム", "スタンダード", "グロース"]
+        selected = []
+        for market in priority_order:
+            market_stocks = filtered[
+                filtered["MarketCodeName"].str.contains(market, na=False)
+            ]
+            remaining = max_stocks - len(selected)
+            if remaining <= 0:
+                break
+            selected.append(market_stocks.head(remaining))
+
+        if selected:
+            filtered = pd.concat(selected, ignore_index=True)
 
     codes = filtered["Code"].unique().tolist()
     logger.info(f"売買対象銘柄: {len(codes)}銘柄")

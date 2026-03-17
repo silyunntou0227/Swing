@@ -63,9 +63,9 @@ class YahooClient:
 
         all_frames = []
 
-        # yfinance.download はバッチで処理可能だが、
-        # 大量（4000銘柄）の場合はチャンクに分割して安定性を確保
-        chunk_size = 200
+        # yfinance.download はバッチで処理可能
+        # チャンクサイズを500に拡大して効率化
+        chunk_size = 500
         for i in range(0, len(tickers), chunk_size):
             chunk = tickers[i:i + chunk_size]
             chunk_num = i // chunk_size + 1
@@ -83,27 +83,25 @@ class YahooClient:
                 )
 
                 if df.empty:
+                    logger.warning(f"Yahoo Finance: チャンク {chunk_num} — データなし")
                     continue
 
                 # マルチカラムインデックスを展開してフラット化
                 chunk_df = self._flatten_multi_ticker_df(df, chunk)
                 if not chunk_df.empty:
                     all_frames.append(chunk_df)
+                    logger.info(
+                        f"Yahoo Finance: チャンク {chunk_num} → "
+                        f"{chunk_df['Code'].nunique()}銘柄, {len(chunk_df)}行"
+                    )
 
             except Exception as e:
                 logger.warning(f"Yahoo Finance: チャンク {chunk_num} 取得エラー: {e}")
-                # チャンクが失敗した場合、個別取得にフォールバック
-                for ticker in chunk:
-                    try:
-                        single_df = self._fetch_single_ticker(ticker, period)
-                        if not single_df.empty:
-                            all_frames.append(single_df)
-                    except Exception:
-                        pass
+                # チャンクが失敗しても続行（個別フォールバックは時間がかかるので省略）
 
             # チャンク間の小休止
             if i + chunk_size < len(tickers):
-                time.sleep(1)
+                time.sleep(2)
 
         if not all_frames:
             logger.warning("Yahoo Finance: 株価データ取得件数0")

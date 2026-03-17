@@ -112,18 +112,26 @@ class NewsFilter:
                 market_data.news, keywords_filter=None
             )
 
-        # 個別銘柄のニュースを検索
+        # 個別銘柄のニュース: まず取得済みニュースから検索（追加API不要）
+        # マッチしなかった場合のみAPIを呼ぶ（候補は最大15件なので負荷は限定的）
         company_score = 0.0
         company_summary = ""
         try:
-            # 銘柄名でニュース検索（APIコール節約のため短い名前を使用）
             search_name = company_name[:10] if len(company_name) > 10 else company_name
-            company_news = self._news_client.fetch_news_for_keyword(search_name)
-            if not company_news.empty:
-                company_score = self._score_news_dataframe(company_news)
-                # 最も関連性の高いニュースをサマリーに
-                if "title" in company_news.columns and len(company_news) > 0:
-                    company_summary = company_news.iloc[0]["title"][:80]
+            if market_data.has_news and search_name:
+                # 取得済みニュースから銘柄名でフィルタ（API呼び出しなし）
+                company_score = self._score_news_dataframe(
+                    market_data.news, keywords_filter=search_name
+                )
+                matched = market_data.news[
+                    market_data.news.apply(
+                        lambda r: search_name in str(r.get("title", ""))
+                        + str(r.get("description", "")),
+                        axis=1,
+                    )
+                ]
+                if not matched.empty and "title" in matched.columns:
+                    company_summary = matched.iloc[0]["title"][:80]
         except Exception as e:
             logger.debug(f"銘柄別ニュース取得失敗 ({code}): {e}")
 

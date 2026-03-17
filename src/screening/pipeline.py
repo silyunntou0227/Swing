@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -51,9 +52,10 @@ class ScreeningPipeline:
 
     Layer 0: ユニバースフィルタ（市場・銘柄種別）
     Layer 1: ファンダメンタルフィルタ
-    Layer 2: トレンド整合性・流動性
-    Layer 3: エントリーシグナル
+    Layer 2+3: トレンド整合性・流動性 + エントリーシグナル（統合処理）
     Layer 4: ニュース・開示フィルタ
+
+    最適化: Layer 2 と Layer 3 でテクニカル指標計算を1回に統合
     """
 
     def __init__(self) -> None:
@@ -62,32 +64,31 @@ class ScreeningPipeline:
     def run(self, market_data: MarketData) -> ScreeningResult:
         """5層パイプラインを実行"""
         result = ScreeningResult()
+        t0 = time.time()
 
         # Layer 0: ユニバースフィルタ
         universe = self._layer0_universe(market_data)
-        logger.info(f"Layer 0 (ユニバース): {len(universe)}銘柄")
+        logger.info(f"Layer 0 (ユニバース): {len(universe)}銘柄 [{time.time()-t0:.0f}s]")
 
         # Layer 1: ファンダメンタル
         filtered = self._layer1_fundamental(universe, market_data)
-        logger.info(f"Layer 1 (ファンダメンタル): {len(filtered)}銘柄")
+        logger.info(f"Layer 1 (ファンダメンタル): {len(filtered)}銘柄 [{time.time()-t0:.0f}s]")
 
-        # Layer 2: トレンド・流動性
+        # Layer 2+3: トレンド・流動性 → エントリーシグナル（統合処理）
         codes = filtered["Code"].tolist() if "Code" in filtered.columns else []
-        trend_codes = self._layer2_trend_liquidity(codes, market_data)
-        logger.info(f"Layer 2 (トレンド・流動性): {len(trend_codes)}銘柄")
-
-        # Layer 3: エントリーシグナル
-        candidates = self._layer3_entry_signals(trend_codes, market_data, filtered)
+        candidates = self._layer2_3_combined(codes, market_data, filtered)
+        buy_count = len([c for c in candidates if c.buy_signal_count > c.sell_signal_count])
+        sell_count = len([c for c in candidates if c.sell_signal_count > c.buy_signal_count])
         logger.info(
-            f"Layer 3 (エントリーシグナル): "
-            f"買い{len([c for c in candidates if c.buy_signal_count > c.sell_signal_count])}件, "
-            f"売り{len([c for c in candidates if c.sell_signal_count > c.buy_signal_count])}件"
+            f"Layer 2+3 (トレンド+シグナル): "
+            f"買い{buy_count}件, 売り{sell_count}件 [{time.time()-t0:.0f}s]"
         )
 
         # Layer 4: ニュース・開示フィルタ
         result = self._layer4_news_filter(candidates, market_data)
         logger.info(
-            f"Layer 4 (ニュース・開示): 買い{len(result.buy)}件, 売り{len(result.sell)}件"
+            f"Layer 4 (ニュース・開示): 買い{len(result.buy)}件, 売り{len(result.sell)}件 "
+            f"[{time.time()-t0:.0f}s]"
         )
 
         return result
@@ -124,71 +125,78 @@ class ScreeningPipeline:
         """Layer 1: ファンダメンタルフィルタ"""
         return filter_fundamentals(stocks, market_data.financials)
 
-    def _layer2_trend_liquidity(
-        self, codes: list[str], market_data: MarketData
-    ) -> list[str]:
-        """Layer 2: トレンド整合性・流動性フィルタ"""
-        # まず流動性でフィルタ
-        liquid_codes = filter_liquidity(codes, market_data.prices)
-
-        # トレンド整合性チェック
-        trend_codes = []
-        for code in liquid_codes:
-            stock_prices = market_data.prices[market_data.prices["Code"] == code]
-            if len(stock_prices) < 50:
-                continue
-
-            stock_prices = stock_prices.copy().reset_index(drop=True)
-            try:
-                stock_prices = calculate_all_indicators(stock_prices)
-            except Exception:
-                continue
-
-            # SMA方向チェック（短期SMAが存在し、トレンドがある程度確認できる）
-            if len(stock_prices) < 30:
-                continue
-
-            last = stock_prices.iloc[-1]
-
-            # ADXチェック（トレンド存在確認）
-            if "ADX" in stock_prices.columns:
-                adx_val = last.get("ADX", 0)
-                if pd.notna(adx_val) and adx_val < ADX_MIN:
-                    continue
-
-            trend_codes.append(code)
-
-        return trend_codes
-
-    def _layer3_entry_signals(
+    def _layer2_3_combined(
         self,
         codes: list[str],
         market_data: MarketData,
         stocks_info: pd.DataFrame,
     ) -> list[CandidateStock]:
-        """Layer 3: エントリーシグナル検出"""
-        candidates = []
+        """Layer 2+3 統合: トレンド・流動性チェック + エントリーシグナル検出
 
-        for code in codes:
+        従来は Layer 2 と Layer 3 で calculate_all_indicators を2回呼んでいたが、
+        1回の計算で両方のチェックを行うことで処理時間を半減する。
+        """
+        t0 = time.time()
+
+        # まず流動性でフィルタ
+        liquid_codes = filter_liquidity(codes, market_data.prices)
+
+        candidates = []
+        total = len(liquid_codes)
+        skipped_short = 0
+        skipped_adx = 0
+        skipped_signal = 0
+
+        for i, code in enumerate(liquid_codes):
+            # 進捗ログ（200銘柄ごと）
+            if i > 0 and i % 200 == 0:
+                elapsed = time.time() - t0
+                logger.info(
+                    f"  テクニカル分析中... {i}/{total} "
+                    f"(候補{len(candidates)}件, {elapsed:.0f}s)"
+                )
+
             stock_prices = market_data.prices[market_data.prices["Code"] == code]
             if len(stock_prices) < 50:
+                skipped_short += 1
                 continue
 
             stock_prices = stock_prices.copy().reset_index(drop=True)
 
+            # テクニカル指標を1回だけ計算（Layer 2+3 共有）
             try:
                 stock_prices = calculate_all_indicators(stock_prices)
+            except Exception:
+                continue
+
+            if len(stock_prices) < 30:
+                skipped_short += 1
+                continue
+
+            last = stock_prices.iloc[-1]
+
+            # --- Layer 2 チェック: ADX（トレンド存在確認）---
+            if "ADX" in stock_prices.columns:
+                adx_val = last.get("ADX", 0)
+                if pd.notna(adx_val) and adx_val < ADX_MIN:
+                    skipped_adx += 1
+                    continue
+
+            # --- Layer 3 チェック: エントリーシグナル ---
+            try:
                 signals = get_all_signals(stock_prices)
             except Exception:
                 continue
 
             if not signals:
+                skipped_signal += 1
                 continue
 
             buy_count, sell_count = count_buy_sell_signals(signals)
 
             # 少なくとも1つの買い/売りシグナルが必要
             if buy_count == 0 and sell_count == 0:
+                skipped_signal += 1
                 continue
 
             # 銘柄名取得
@@ -209,6 +217,11 @@ class ScreeningPipeline:
                 sell_signal_count=sell_count,
                 prices_df=stock_prices,
             ))
+
+        logger.info(
+            f"  統計: データ不足={skipped_short}, ADXフィルタ={skipped_adx}, "
+            f"シグナルなし={skipped_signal}, 候補={len(candidates)}"
+        )
 
         return candidates
 

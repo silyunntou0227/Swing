@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -31,6 +32,10 @@ from src.data.macro_client import MacroClient
 from src.data.margin_client import MarginClient
 from src.config import JQUANTS_API_KEY
 from src.utils.logging_config import logger
+
+# GitHub Actions 無料枠で安全に完了するための銘柄上限
+# プライム(~1800) + スタンダード上位 で十分なカバレッジ
+MAX_STOCKS_FOR_DOWNLOAD = 2000
 
 
 @dataclass
@@ -90,24 +95,39 @@ class DataLoader:
     def load_all(self) -> MarketData:
         """全データソースからデータを取得"""
         data = MarketData()
+        t0 = time.time()
 
         # === Step 1: 銘柄一覧取得（JPX公式 → J-Quants フォールバック）===
+        logger.info("=" * 50)
+        logger.info("Step 1/7: 銘柄一覧取得")
         data.stocks = self._load_stock_list()
-        codes = get_tradeable_codes(data.stocks)
-        logger.info(f"分析対象: {len(codes)}銘柄")
+        codes = get_tradeable_codes(data.stocks, max_stocks=MAX_STOCKS_FOR_DOWNLOAD)
+        logger.info(f"分析対象: {len(codes)}銘柄（{time.time()-t0:.0f}秒経過）")
 
         # === Step 2: 株価データ取得（yfinance 主力）===
+        logger.info("=" * 50)
+        logger.info("Step 2/7: 株価データ取得（yfinance）")
+        t1 = time.time()
         data.prices = self._load_prices(codes)
+        logger.info(f"株価取得完了（{time.time()-t1:.0f}秒）")
 
         # === Step 3: 財務データ（J-Quants → スキップ）===
+        logger.info("=" * 50)
+        logger.info("Step 3/7: 財務データ取得")
         data.financials = self._load_financials()
 
-        # === Step 4: 補助データ（全て非致命的）===
+        # === Step 4-7: 補助データ（全て非致命的）===
+        logger.info("=" * 50)
+        logger.info("Step 4-7: 補助データ取得")
         data.disclosures = self._load_disclosures()
         data.edinet_filings = self._load_edinet()
         data.news = self._load_news()
-        data.margin_data = self._load_margin()
         data.macro_indicators = self._load_macro()
+        # 信用残は後でスクリーニング候補に対して個別取得
+        data.margin_data = pd.DataFrame()
+
+        elapsed = time.time() - t0
+        logger.info(f"全データ取得完了（{elapsed:.0f}秒）")
 
         return data
 
@@ -229,17 +249,6 @@ class DataLoader:
             return df
         except Exception as e:
             logger.warning(f"ニュース取得失敗（続行）: {e}")
-            return pd.DataFrame()
-
-    def _load_margin(self) -> pd.DataFrame:
-        """信用残・空売りデータ取得"""
-        try:
-            client = MarginClient()
-            df = client.fetch_margin_data()
-            logger.info(f"信用残データ: {len(df)}件取得")
-            return df
-        except Exception as e:
-            logger.warning(f"信用残データ取得失敗（続行）: {e}")
             return pd.DataFrame()
 
     def _load_macro(self) -> dict:
