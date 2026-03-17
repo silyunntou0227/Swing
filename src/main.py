@@ -1,5 +1,7 @@
 """日本株スイングトレード自動スクリーニングシステム — エントリーポイント"""
 
+from __future__ import annotations
+
 import sys
 import time
 
@@ -11,6 +13,17 @@ from src.scoring.risk import RiskCalculator
 from src.notify.discord import DiscordNotifier
 from src.notify.formatter import ResultFormatter
 from src.config import TOP_BUY_CANDIDATES, TOP_SELL_CANDIDATES
+
+
+def _send_formatted(notifier: DiscordNotifier, data: dict | str) -> None:
+    """formatter が返す dict/str を適切に Discord に送信"""
+    if isinstance(data, str):
+        notifier.send(content=data)
+    elif isinstance(data, dict) and "embeds" in data:
+        for embed in data["embeds"]:
+            notifier.send(embed=embed)
+    elif isinstance(data, dict):
+        notifier.send(embed=data)
 
 
 def main() -> int:
@@ -66,17 +79,17 @@ def main() -> int:
 
         # 市場サマリー
         summary = formatter.format_market_summary(market_data)
-        notifier.send(summary)
+        _send_formatted(notifier, summary)
 
         # 買い候補
         for i, candidate in enumerate(top_buy, 1):
             message = formatter.format_buy_candidate(candidate, rank=i)
-            notifier.send(message)
+            _send_formatted(notifier, message)
 
         # 売り候補
         for i, candidate in enumerate(top_sell, 1):
             message = formatter.format_sell_candidate(candidate, rank=i)
-            notifier.send(message)
+            _send_formatted(notifier, message)
 
         elapsed = time.time() - start_time
         logger.info(f"=== スキャン完了（{elapsed:.1f}秒） ===")
