@@ -1,0 +1,234 @@
+"""5層スクリーニングパイプラインオーケストレーター"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import pandas as pd
+
+from src.config import (
+    TARGET_MARKETS,
+    EXCLUDE_CATEGORIES,
+    MIN_LISTING_DAYS,
+    ADX_MIN,
+    SIGNAL_LOOKBACK_DAYS,
+)
+from src.data.data_loader import MarketData
+from src.screening.fundamental import filter_fundamentals
+from src.screening.liquidity import filter_liquidity
+from src.screening.news_filter import NewsFilter
+from src.indicators.technical import (
+    calculate_all_indicators,
+    get_all_signals,
+    count_buy_sell_signals,
+)
+from src.utils.logging_config import logger
+
+
+@dataclass
+class CandidateStock:
+    """スクリーニング通過した候補銘柄"""
+
+    code: str
+    name: str
+    close: float
+    signals: list[str] = field(default_factory=list)
+    buy_signal_count: int = 0
+    sell_signal_count: int = 0
+    prices_df: pd.DataFrame = field(default_factory=pd.DataFrame)
+
+
+@dataclass
+class ScreeningResult:
+    """スクリーニング結果"""
+
+    buy: list[CandidateStock] = field(default_factory=list)
+    sell: list[CandidateStock] = field(default_factory=list)
+
+
+class ScreeningPipeline:
+    """5層スクリーニングパイプライン
+
+    Layer 0: ユニバースフィルタ（市場・銘柄種別）
+    Layer 1: ファンダメンタルフィルタ
+    Layer 2: トレンド整合性・流動性
+    Layer 3: エントリーシグナル
+    Layer 4: ニュース・開示フィルタ
+    """
+
+    def __init__(self) -> None:
+        self._news_filter = NewsFilter()
+
+    def run(self, market_data: MarketData) -> ScreeningResult:
+        """5層パイプラインを実行"""
+        result = ScreeningResult()
+
+        # Layer 0: ユニバースフィルタ
+        universe = self._layer0_universe(market_data)
+        logger.info(f"Layer 0 (ユニバース): {len(universe)}銘柄")
+
+        # Layer 1: ファンダメンタル
+        filtered = self._layer1_fundamental(universe, market_data)
+        logger.info(f"Layer 1 (ファンダメンタル): {len(filtered)}銘柄")
+
+        # Layer 2: トレンド・流動性
+        codes = filtered["Code"].tolist() if "Code" in filtered.columns else []
+        trend_codes = self._layer2_trend_liquidity(codes, market_data)
+        logger.info(f"Layer 2 (トレンド・流動性): {len(trend_codes)}銘柄")
+
+        # Layer 3: エントリーシグナル
+        candidates = self._layer3_entry_signals(trend_codes, market_data, filtered)
+        logger.info(
+            f"Layer 3 (エントリーシグナル): "
+            f"買い{len([c for c in candidates if c.buy_signal_count > c.sell_signal_count])}件, "
+            f"売り{len([c for c in candidates if c.sell_signal_count > c.buy_signal_count])}件"
+        )
+
+        # Layer 4: ニュース・開示フィルタ
+        result = self._layer4_news_filter(candidates, market_data)
+        logger.info(
+            f"Layer 4 (ニュース・開示): 買い{len(result.buy)}件, 売り{len(result.sell)}件"
+        )
+
+        return result
+
+    def _layer0_universe(self, market_data: MarketData) -> pd.DataFrame:
+        """Layer 0: ユニバースフィルタ"""
+        stocks = market_data.stocks.copy()
+        if stocks.empty:
+            return stocks
+
+        # 対象市場フィルタ
+        if "MarketCodeName" in stocks.columns:
+            stocks = stocks[
+                stocks["MarketCodeName"].isin(TARGET_MARKETS)
+                | stocks["MarketCodeName"].str.contains(
+                    "|".join(TARGET_MARKETS), na=False
+                )
+            ]
+
+        # ETF/REIT除外
+        if "Sector17CodeName" in stocks.columns:
+            for cat in EXCLUDE_CATEGORIES:
+                stocks = stocks[~stocks["Sector17CodeName"].str.contains(cat, na=False)]
+
+        # 銘柄コード正規化
+        if "Code" in stocks.columns:
+            stocks["Code"] = stocks["Code"].astype(str).str[:4]
+
+        return stocks
+
+    def _layer1_fundamental(
+        self, stocks: pd.DataFrame, market_data: MarketData
+    ) -> pd.DataFrame:
+        """Layer 1: ファンダメンタルフィルタ"""
+        return filter_fundamentals(stocks, market_data.financials)
+
+    def _layer2_trend_liquidity(
+        self, codes: list[str], market_data: MarketData
+    ) -> list[str]:
+        """Layer 2: トレンド整合性・流動性フィルタ"""
+        # まず流動性でフィルタ
+        liquid_codes = filter_liquidity(codes, market_data.prices)
+
+        # トレンド整合性チェック
+        trend_codes = []
+        for code in liquid_codes:
+            stock_prices = market_data.prices[market_data.prices["Code"] == code]
+            if len(stock_prices) < 50:
+                continue
+
+            stock_prices = stock_prices.copy().reset_index(drop=True)
+            try:
+                stock_prices = calculate_all_indicators(stock_prices)
+            except Exception:
+                continue
+
+            # SMA方向チェック（短期SMAが存在し、トレンドがある程度確認できる）
+            if len(stock_prices) < 30:
+                continue
+
+            last = stock_prices.iloc[-1]
+
+            # ADXチェック（トレンド存在確認）
+            if "ADX" in stock_prices.columns:
+                adx_val = last.get("ADX", 0)
+                if pd.notna(adx_val) and adx_val < ADX_MIN:
+                    continue
+
+            trend_codes.append(code)
+
+        return trend_codes
+
+    def _layer3_entry_signals(
+        self,
+        codes: list[str],
+        market_data: MarketData,
+        stocks_info: pd.DataFrame,
+    ) -> list[CandidateStock]:
+        """Layer 3: エントリーシグナル検出"""
+        candidates = []
+
+        for code in codes:
+            stock_prices = market_data.prices[market_data.prices["Code"] == code]
+            if len(stock_prices) < 50:
+                continue
+
+            stock_prices = stock_prices.copy().reset_index(drop=True)
+
+            try:
+                stock_prices = calculate_all_indicators(stock_prices)
+                signals = get_all_signals(stock_prices)
+            except Exception:
+                continue
+
+            if not signals:
+                continue
+
+            buy_count, sell_count = count_buy_sell_signals(signals)
+
+            # 少なくとも1つの買い/売りシグナルが必要
+            if buy_count == 0 and sell_count == 0:
+                continue
+
+            # 銘柄名取得
+            name = ""
+            if not stocks_info.empty and "Code" in stocks_info.columns:
+                name_row = stocks_info[stocks_info["Code"] == code]
+                if not name_row.empty:
+                    name = name_row.iloc[0].get("CompanyName", code)
+
+            close = stock_prices["Close"].iloc[-1] if "Close" in stock_prices.columns else 0.0
+
+            candidates.append(CandidateStock(
+                code=code,
+                name=name or code,
+                close=close,
+                signals=signals,
+                buy_signal_count=buy_count,
+                sell_signal_count=sell_count,
+                prices_df=stock_prices,
+            ))
+
+        return candidates
+
+    def _layer4_news_filter(
+        self,
+        candidates: list[CandidateStock],
+        market_data: MarketData,
+    ) -> ScreeningResult:
+        """Layer 4: ニュース・開示フィルタ"""
+        result = ScreeningResult()
+
+        for candidate in candidates:
+            # MBO/TOB等の除外チェック
+            if self._news_filter.should_exclude(candidate.code, market_data):
+                continue
+
+            # 買い/売り判定
+            if candidate.buy_signal_count > candidate.sell_signal_count:
+                result.buy.append(candidate)
+            elif candidate.sell_signal_count > candidate.buy_signal_count:
+                result.sell.append(candidate)
+
+        return result
