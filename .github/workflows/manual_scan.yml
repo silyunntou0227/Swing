@@ -29,11 +29,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Debug secrets check
+      - name: Debug info
         run: |
           echo "JQUANTS_MAIL length: ${#JQUANTS_MAIL}"
           echo "JQUANTS_PASSWORD length: ${#JQUANTS_PASSWORD}"
           echo "JQUANTS_MAIL first 3 chars: ${JQUANTS_MAIL:0:3}***"
+          pip show jquants-api-client | grep -E "^(Name|Version)"
         env:
           JQUANTS_MAIL: ${{ secrets.JQUANTS_MAIL }}
           JQUANTS_PASSWORD: ${{ secrets.JQUANTS_PASSWORD }}
