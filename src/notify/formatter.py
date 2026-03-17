@@ -63,6 +63,40 @@ class ScoredCandidate:
     ruin_probability: float = 0.0
 
 
+POSITION_SIZE_CAPITALS = [250_000, 500_000, 1_000_000]  # 25万/50万/100万
+
+
+def _format_position_sizes(
+    close: float, risk_per_share: float, direction: str
+) -> str:
+    """1%ルールに基づく3パターンのポジションサイズを計算
+
+    1%ルール: 1トレードの最大損失 = 総資金の1%
+    株数 = (資金 × 1%) / 1株あたりリスク（損切り幅）
+    100株単位に切り下げ
+    """
+    lines = []
+    for capital in POSITION_SIZE_CAPITALS:
+        risk_budget = capital * 0.01  # 1%
+        raw_shares = risk_budget / risk_per_share
+        shares = max(100, (int(raw_shares) // 100) * 100)
+        cost = shares * close
+        max_loss = shares * risk_per_share
+        capital_pct = cost / capital * 100
+
+        label = f"¥{capital:,.0f}"
+        if cost > capital:
+            lines.append(f"{label}: 資金不足（最低{100}株=¥{100*close:,.0f}）")
+        else:
+            lines.append(
+                f"{label}: **{shares}株** (¥{cost:,.0f}, "
+                f"資金の{capital_pct:.0f}%) "
+                f"最大損失¥{max_loss:,.0f}"
+            )
+
+    return "\n".join(lines)
+
+
 class ResultFormatter:
     """スキャン結果をDiscord Embed形式にフォーマット"""
 
@@ -194,14 +228,13 @@ class ResultFormatter:
                 "inline": False,
             })
 
-        # リスク管理
+        # リスク管理 + 1%ルール ポジションサイズ提案
         if c.stop_loss > 0:
             sl_pct = (c.stop_loss - c.close) / c.close * 100
             tp_pct = (c.take_profit - c.close) / c.close * 100
             risk_text = (
                 f"損切り: ¥{c.stop_loss:,.0f} ({sl_pct:+.1f}%) | "
                 f"利確: ¥{c.take_profit:,.0f} ({tp_pct:+.1f}%)\n"
-                f"推奨: {c.position_size_shares}株 (¥{c.position_size_yen:,.0f}) | "
                 f"R:R = 1:{c.risk_reward_ratio:.1f} | "
                 f"破産確率: {c.ruin_probability:.1f}%"
             )
@@ -210,6 +243,16 @@ class ResultFormatter:
                 "value": risk_text,
                 "inline": False,
             })
+
+            # 1%ルール ポジションサイズ提案（25万/50万/100万の3パターン）
+            risk_per_share = abs(c.close - c.stop_loss)
+            if risk_per_share > 0:
+                pos_text = _format_position_sizes(c.close, risk_per_share, direction)
+                fields.append({
+                    "name": "1%ルール ポジションサイズ",
+                    "value": pos_text,
+                    "inline": False,
+                })
 
         return {
             "embeds": [{
