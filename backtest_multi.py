@@ -1,8 +1,7 @@
-"""5年間×20期間 大規模バックテスト
+"""5年間×20期間 大規模バックテスト（最適化版）
 
-2021年〜2026年の間からランダムに20の期間を選び、
-各期間でスクリーニング→7日後の値動きを検証する。
-スコアリング内訳と精度を詳細分析し、改善ポイントを特定する。
+株価データを1回だけダウンロードし、各期間はスライスで処理。
+GitHub Actions 60分以内に完了する設計。
 """
 from __future__ import annotations
 
@@ -10,9 +9,7 @@ import os
 import sys
 import time
 import random
-import json
 from datetime import date, timedelta
-from dataclasses import dataclass, field
 
 import pandas as pd
 import yfinance as yf
@@ -21,7 +18,6 @@ from src.data.stock_list import fetch_jpx_stock_list, get_tradeable_codes
 from src.screening.pipeline import ScreeningPipeline
 from src.scoring.scorer import MultiFactorScorer
 from src.data.data_loader import MarketData
-from src.data.yahoo_client import YahooClient
 from src.config import TOP_BUY_CANDIDATES, TOP_SELL_CANDIDATES, DISCORD_WEBHOOK_URL
 from src.utils.logging_config import logger
 
@@ -39,82 +35,122 @@ def send_discord(content: str) -> None:
         print(f"Discord送信エラー: {e}")
 
 
-def generate_random_dates(n: int = 20, start_year: int = 2021, end_year: int = 2026) -> list[date]:
-    """ランダムな営業日（金曜日 or 平日）を生成"""
-    start = date(start_year, 1, 4)
-    end = date(end_year, 3, 6)  # 最新データの1週間前
+def generate_random_dates(n: int = 20) -> list[date]:
+    """5年間からランダムに営業日を選択（固定シード）"""
+    start = date(2021, 4, 1)
+    end = date(2026, 3, 6)
     all_dates = []
     current = start
     while current <= end:
-        if current.weekday() < 5:  # 平日
+        if current.weekday() < 5:
             all_dates.append(current)
         current += timedelta(days=1)
 
-    # ランダムに選択（最低30日間隔を確保）
-    selected = []
-    random.seed(42)  # 再現性のため固定シード
+    random.seed(42)
     candidates = all_dates.copy()
     random.shuffle(candidates)
 
+    selected = []
     for d in candidates:
         if len(selected) >= n:
             break
-        # 既選択の日付と30日以上離れているか
         if all(abs((d - s).days) >= 30 for s in selected):
             selected.append(d)
-
     return sorted(selected)
+
+
+def download_all_prices(codes: list[str]) -> pd.DataFrame:
+    """全銘柄の5年間株価を1回でダウンロード（最大の最適化ポイント）"""
+    tickers = [f"{c}.T" for c in codes]
+    chunk_size = 200
+    all_frames = []
+
+    for i in range(0, len(tickers), chunk_size):
+        chunk = tickers[i:i+chunk_size]
+        print(f"  ダウンロード: チャンク {i//chunk_size+1}/{(len(tickers)-1)//chunk_size+1} ({len(chunk)}銘柄)")
+        try:
+            data = yf.download(
+                chunk,
+                period="5y",
+                auto_adjust=True,
+                threads=True,
+                progress=False,
+            )
+            if data.empty:
+                continue
+
+            # マルチカラム → ロング形式変換
+            if isinstance(data.columns, pd.MultiIndex):
+                for ticker in chunk:
+                    code = ticker.replace(".T", "")
+                    try:
+                        df_single = data.xs(ticker, level=1, axis=1).copy()
+                        df_single = df_single.reset_index()
+                        df_single["Code"] = code
+                        df_single = df_single.rename(columns={"index": "Date"})
+                        if "Date" not in df_single.columns:
+                            df_single = df_single.reset_index()
+                            if "Date" not in df_single.columns:
+                                for col in df_single.columns:
+                                    if "date" in str(col).lower():
+                                        df_single = df_single.rename(columns={col: "Date"})
+                                        break
+                        if not df_single.empty and "Close" in df_single.columns:
+                            all_frames.append(df_single[["Date", "Open", "High", "Low", "Close", "Volume", "Code"]].dropna(subset=["Close"]))
+                    except (KeyError, TypeError):
+                        continue
+            else:
+                data = data.reset_index()
+                if len(chunk) == 1:
+                    data["Code"] = chunk[0].replace(".T", "")
+                    if "Close" in data.columns:
+                        all_frames.append(data[["Date", "Open", "High", "Low", "Close", "Volume", "Code"]].dropna(subset=["Close"]))
+        except Exception as e:
+            print(f"    チャンクエラー: {e}")
+            continue
+
+        time.sleep(1)
+
+    if not all_frames:
+        return pd.DataFrame()
+
+    prices = pd.concat(all_frames, ignore_index=True)
+    prices["Date"] = pd.to_datetime(prices["Date"], utc=True).dt.tz_localize(None)
+    prices["Code"] = prices["Code"].astype(str).str[:4]
+    prices = prices.sort_values(["Code", "Date"]).reset_index(drop=True)
+    print(f"  完了: {prices['Code'].nunique()}銘柄, {len(prices)}行")
+    return prices
 
 
 def run_single_backtest(
     cutoff_date: date,
-    check_days: int,
+    all_prices: pd.DataFrame,
     stocks: pd.DataFrame,
-    codes: list[str],
-    yahoo: YahooClient,
+    check_days: int = 7,
 ) -> dict:
-    """単一期間のバックテストを実行"""
+    """単一期間のバックテスト（ダウンロード済みデータを使用）"""
     result = {
         "cutoff_date": cutoff_date.isoformat(),
-        "check_days": check_days,
-        "buy_candidates": [],
-        "sell_candidates": [],
         "buy_results": [],
         "sell_results": [],
         "score_details": [],
     }
 
-    # 株価取得（2年分 → cutoff以前に絞る）
-    start_date = cutoff_date - timedelta(days=400)
-    end_date = cutoff_date + timedelta(days=check_days + 5)
-
-    try:
-        prices = yahoo.fetch_bulk_prices(codes, period="2y")
-    except Exception as e:
-        print(f"    株価取得エラー: {e}")
-        return result
-
-    if prices.empty:
-        return result
-
-    # 前処理
-    if "Date" in prices.columns:
-        prices["Date"] = pd.to_datetime(prices["Date"], utc=True).dt.tz_localize(None)
-    if "Code" in prices.columns:
-        prices["Code"] = prices["Code"].astype(str).str[:4]
-
     cutoff_dt = pd.Timestamp(cutoff_date)
-    prices_before = prices[prices["Date"] <= cutoff_dt].copy()
-    prices_before = prices_before.sort_values(["Code", "Date"]).reset_index(drop=True)
+    # cutoff前300日〜cutoffの株価データ
+    start_dt = cutoff_dt - pd.Timedelta(days=400)
+    prices_before = all_prices[
+        (all_prices["Date"] >= start_dt) & (all_prices["Date"] <= cutoff_dt)
+    ].copy()
 
-    price_cols = ["Open", "High", "Low", "Close", "Volume"]
-    existing = [c for c in price_cols if c in prices_before.columns]
-    if existing:
-        prices_before = prices_before.dropna(subset=existing)
-
-    if prices_before.empty or prices_before["Code"].nunique() < 100:
-        print(f"    データ不足: {prices_before['Code'].nunique() if not prices_before.empty else 0}銘柄")
+    if prices_before.empty or prices_before["Code"].nunique() < 50:
         return result
+
+    # cutoff後のデータ（検証用）
+    end_dt = cutoff_dt + pd.Timedelta(days=check_days * 2)
+    prices_after = all_prices[
+        (all_prices["Date"] > cutoff_dt) & (all_prices["Date"] <= end_dt)
+    ].copy()
 
     # スクリーニング
     market_data = MarketData(
@@ -124,27 +160,32 @@ def run_single_backtest(
         scan_date=cutoff_date,
     )
 
-    pipeline = ScreeningPipeline()
-    candidates = pipeline.run(market_data)
+    try:
+        pipeline = ScreeningPipeline()
+        candidates = pipeline.run(market_data)
+    except Exception as e:
+        print(f"    スクリーニングエラー: {e}")
+        return result
 
     # スコアリング
-    scorer = MultiFactorScorer()
-    scored_buy = scorer.score(candidates.buy, market_data, direction="buy")
-    scored_sell = scorer.score(candidates.sell, market_data, direction="sell")
+    try:
+        scorer = MultiFactorScorer()
+        scored_buy = scorer.score(candidates.buy, market_data, direction="buy")
+        scored_sell = scorer.score(candidates.sell, market_data, direction="sell")
+    except Exception as e:
+        print(f"    スコアリングエラー: {e}")
+        return result
 
     top_buy = sorted(scored_buy, key=lambda x: x.total_score, reverse=True)[:TOP_BUY_CANDIDATES]
     top_sell = sorted(scored_sell, key=lambda x: x.total_score, reverse=True)[:TOP_SELL_CANDIDATES]
 
-    # 検証（推奨保有日数後の値動きをチェック）
-    prices_after = prices[prices["Date"] > cutoff_dt].copy()
-
+    # 検証
     for c in top_buy:
         entry_data = prices_before[prices_before["Code"] == c.code]
         if entry_data.empty:
             continue
         entry_price = float(entry_data.iloc[-1]["Close"])
 
-        # 推奨保有日数後の終値
         hold = c.recommended_hold_days if c.recommended_hold_days > 0 else check_days
         after_data = prices_after[prices_after["Code"] == c.code].head(hold)
         if after_data.empty:
@@ -152,29 +193,12 @@ def run_single_backtest(
 
         exit_price = float(after_data.iloc[-1]["Close"])
         pct = (exit_price - entry_price) / entry_price * 100
-
-        # 期間中の最高値・最安値
-        max_price = float(after_data["Close"].max()) if not after_data.empty else exit_price
-        min_price = float(after_data["Close"].min()) if not after_data.empty else exit_price
-        max_pct = (max_price - entry_price) / entry_price * 100
-        min_pct = (min_price - entry_price) / entry_price * 100
+        max_pct = (float(after_data["Close"].max()) - entry_price) / entry_price * 100
+        min_pct = (float(after_data["Close"].min()) - entry_price) / entry_price * 100
 
         result["buy_results"].append(pct)
-        result["buy_candidates"].append({
-            "code": c.code,
-            "name": c.name,
-            "score": round(c.total_score, 1),
-            "hold_days": hold,
-            "entry": round(entry_price, 1),
-            "exit": round(exit_price, 1),
-            "pct": round(pct, 2),
-            "max_pct": round(max_pct, 2),
-            "min_pct": round(min_pct, 2),
-            "hit": pct > 0,
-        })
         result["score_details"].append({
-            "code": c.code,
-            "direction": "buy",
+            "code": c.code, "name": c.name, "direction": "buy",
             "total": round(c.total_score, 1),
             "trend": round(c.trend_score, 1),
             "macd": round(c.macd_score, 1),
@@ -184,10 +208,9 @@ def run_single_backtest(
             "ichimoku": round(c.ichimoku_score, 1),
             "pattern": round(c.pattern_score, 1),
             "risk_reward": round(c.risk_reward_score, 1),
-            "news": round(c.news_score, 1),
-            "margin": round(c.margin_score, 1),
-            "pct": round(pct, 2),
-            "hit": pct > 0,
+            "pct": round(pct, 2), "max_pct": round(max_pct, 2),
+            "min_pct": round(min_pct, 2), "hit": pct > 0,
+            "hold_days": hold,
         })
 
     for c in top_sell:
@@ -205,23 +228,14 @@ def run_single_backtest(
         pct = (exit_price - entry_price) / entry_price * 100
 
         result["sell_results"].append(pct)
-        result["sell_candidates"].append({
-            "code": c.code,
-            "name": c.name,
-            "score": round(c.total_score, 1),
-            "pct": round(pct, 2),
-            "hit": pct < 0,
-        })
         result["score_details"].append({
-            "code": c.code,
-            "direction": "sell",
+            "code": c.code, "name": c.name, "direction": "sell",
             "total": round(c.total_score, 1),
             "trend": round(c.trend_score, 1),
             "macd": round(c.macd_score, 1),
             "rsi": round(c.rsi_score, 1),
             "ichimoku": round(c.ichimoku_score, 1),
-            "pct": round(pct, 2),
-            "hit": pct < 0,
+            "pct": round(pct, 2), "hit": pct < 0,
         })
 
     return result
@@ -229,43 +243,47 @@ def run_single_backtest(
 
 def main():
     t0 = time.time()
-    check_days = 7  # デフォルト検証期間
 
     print("=" * 60)
-    print("大規模バックテスト: 5年間×20期間")
+    print("大規模バックテスト: 5年間×20期間（最適化版）")
     print("=" * 60)
 
     # 銘柄一覧
-    print("\n[1/3] 銘柄一覧取得...")
+    print("\n[1/4] 銘柄一覧取得...")
     stocks = fetch_jpx_stock_list()
-    codes = get_tradeable_codes(stocks, max_stocks=800)  # バックテスト用に絞る
+    codes = get_tradeable_codes(stocks, max_stocks=600)
     print(f"  対象: {len(codes)}銘柄")
 
-    yahoo = YahooClient()
+    # 全株価を1回でダウンロード（最大の時間節約）
+    print(f"\n[2/4] 5年間の株価データを一括ダウンロード...")
+    all_prices = download_all_prices(codes)
+    if all_prices.empty:
+        print("ERROR: 株価データ取得失敗")
+        return 1
+    print(f"  ダウンロード完了: {time.time()-t0:.0f}秒")
 
     # ランダム期間生成
     dates = generate_random_dates(20)
-    print(f"\n[2/3] テスト期間: {len(dates)}期間")
+    print(f"\n[3/4] テスト期間: {len(dates)}期間")
     for i, d in enumerate(dates):
         print(f"  {i+1}. {d} ({d.strftime('%a')})")
 
-    # 各期間でバックテスト実行
-    print(f"\n[3/3] バックテスト実行中...")
+    # 各期間でバックテスト
+    print(f"\n[4/4] バックテスト実行中...")
     all_results = []
 
     for i, cutoff in enumerate(dates):
         elapsed = time.time() - t0
-        print(f"\n--- 期間 {i+1}/{len(dates)}: {cutoff} [{elapsed:.0f}s経過] ---")
+        print(f"\n--- 期間 {i+1}/{len(dates)}: {cutoff} [{elapsed:.0f}s] ---")
 
-        result = run_single_backtest(cutoff, check_days, stocks, codes, yahoo)
+        result = run_single_backtest(cutoff, all_prices, stocks)
         all_results.append(result)
 
         buy_n = len(result["buy_results"])
         buy_wins = sum(1 for r in result["buy_results"] if r > 0)
+        buy_avg = sum(result["buy_results"]) / buy_n if buy_n > 0 else 0
         sell_n = len(result["sell_results"])
         sell_wins = sum(1 for r in result["sell_results"] if r < 0)
-
-        buy_avg = sum(result["buy_results"]) / len(result["buy_results"]) if result["buy_results"] else 0
         print(f"  買い: {buy_wins}/{buy_n}的中 平均{buy_avg:+.2f}% | 売り: {sell_wins}/{sell_n}的中")
 
     # ===== 総合分析 =====
@@ -273,120 +291,94 @@ def main():
     print("総合分析レポート")
     print("=" * 60)
 
-    all_buy_results = []
-    all_sell_results = []
-    all_score_details = []
+    all_buy = [r for res in all_results for r in res["buy_results"]]
+    all_sell = [r for res in all_results for r in res["sell_results"]]
+    all_details = [d for res in all_results for d in res["score_details"]]
 
-    for r in all_results:
-        all_buy_results.extend(r["buy_results"])
-        all_sell_results.extend(r["sell_results"])
-        all_score_details.extend(r["score_details"])
+    discord_lines = ["**大規模バックテスト結果 (5年間×20期間)**\n"]
 
-    # 全体パフォーマンス
-    if all_buy_results:
-        total_buy_wins = sum(1 for r in all_buy_results if r > 0)
-        total_buy_avg = sum(all_buy_results) / len(all_buy_results)
+    if all_buy:
+        wins = sum(1 for r in all_buy if r > 0)
+        avg = sum(all_buy) / len(all_buy)
         print(f"\n買い候補 全体:")
-        print(f"  トレード数: {len(all_buy_results)}")
-        print(f"  的中率: {total_buy_wins}/{len(all_buy_results)} ({total_buy_wins/len(all_buy_results)*100:.1f}%)")
-        print(f"  平均騰落率: {total_buy_avg:+.2f}%")
-        print(f"  最大利益: {max(all_buy_results):+.2f}%")
-        print(f"  最大損失: {min(all_buy_results):+.2f}%")
+        print(f"  トレード数: {len(all_buy)}")
+        print(f"  的中率: {wins}/{len(all_buy)} ({wins/len(all_buy)*100:.1f}%)")
+        print(f"  平均騰落率: {avg:+.2f}%")
+        print(f"  最大利益: {max(all_buy):+.2f}%")
+        print(f"  最大損失: {min(all_buy):+.2f}%")
+        discord_lines.append(
+            f"買い: {wins}/{len(all_buy)}的中 ({wins/len(all_buy)*100:.0f}%) "
+            f"平均{avg:+.2f}% 最大{max(all_buy):+.1f}%/{min(all_buy):+.1f}%"
+        )
 
-    if all_sell_results:
-        total_sell_wins = sum(1 for r in all_sell_results if r < 0)
-        total_sell_avg = sum(all_sell_results) / len(all_sell_results)
+    if all_sell:
+        wins = sum(1 for r in all_sell if r < 0)
+        avg = sum(all_sell) / len(all_sell)
         print(f"\n売り候補 全体:")
-        print(f"  トレード数: {len(all_sell_results)}")
-        print(f"  的中率: {total_sell_wins}/{len(all_sell_results)} ({total_sell_wins/len(all_sell_results)*100:.1f}%)")
-        print(f"  平均騰落率: {total_sell_avg:+.2f}%")
+        print(f"  トレード数: {len(all_sell)}")
+        print(f"  的中率: {wins}/{len(all_sell)} ({wins/len(all_sell)*100:.1f}%)")
+        print(f"  平均騰落率: {avg:+.2f}%")
+        discord_lines.append(
+            f"売り: {wins}/{len(all_sell)}的中 ({wins/len(all_sell)*100:.0f}%) 平均{avg:+.2f}%"
+        )
 
-    # スコア内訳と的中率の相関分析
-    if all_score_details:
-        buy_details = [d for d in all_score_details if d["direction"] == "buy"]
-        if buy_details:
-            df_scores = pd.DataFrame(buy_details)
+    # スコア内訳分析
+    buy_details = [d for d in all_details if d["direction"] == "buy"]
+    if buy_details:
+        df_s = pd.DataFrame(buy_details)
 
-            print(f"\nスコア内訳分析（買い候補 {len(buy_details)}件）:")
-            print("-" * 50)
+        print(f"\nスコア内訳分析（買い {len(buy_details)}件）:")
+        print("-" * 60)
+        discord_lines.append(f"\n**スコア内訳分析 ({len(buy_details)}件)**")
 
-            # 各スコア要因と的中率の関係
-            score_factors = ["trend", "macd", "volume", "rsi", "ichimoku", "pattern", "risk_reward"]
-            for factor in score_factors:
-                if factor not in df_scores.columns:
-                    continue
-                # スコアが高い群 vs 低い群
-                median = df_scores[factor].median()
-                high_group = df_scores[df_scores[factor] >= median]
-                low_group = df_scores[df_scores[factor] < median]
+        factors = ["trend", "macd", "volume", "fundamental", "rsi", "ichimoku", "pattern", "risk_reward"]
+        for factor in factors:
+            if factor not in df_s.columns:
+                continue
+            median = df_s[factor].median()
+            high = df_s[df_s[factor] >= median]
+            low = df_s[df_s[factor] < median]
+            h_hit = high["hit"].mean() * 100 if len(high) > 0 else 0
+            l_hit = low["hit"].mean() * 100 if len(low) > 0 else 0
+            h_avg = high["pct"].mean() if len(high) > 0 else 0
+            l_avg = low["pct"].mean() if len(low) > 0 else 0
+            diff = h_hit - l_hit
+            mark = "+++" if diff > 15 else "++" if diff > 5 else "+" if diff > 0 else "-" if diff > -5 else "--"
 
-                high_hit = high_group["hit"].mean() * 100 if len(high_group) > 0 else 0
-                low_hit = low_group["hit"].mean() * 100 if len(low_group) > 0 else 0
-                high_avg = high_group["pct"].mean() if len(high_group) > 0 else 0
-                low_avg = low_group["pct"].mean() if len(low_group) > 0 else 0
+            line = (
+                f"  {factor:12s}: 高群 {h_hit:.0f}%({h_avg:+.1f}%) "
+                f"/ 低群 {l_hit:.0f}%({l_avg:+.1f}%) 差{diff:+.0f}% [{mark}]"
+            )
+            print(line)
+            discord_lines.append(f"{factor}: 高{h_hit:.0f}%/低{l_hit:.0f}% [{mark}]")
 
-                diff = high_hit - low_hit
-                indicator = "+++" if diff > 15 else "++" if diff > 5 else "+" if diff > 0 else "-" if diff > -5 else "--"
+        # スコア帯別的中率
+        print(f"\nスコア帯別:")
+        discord_lines.append(f"\n**スコア帯別的中率**")
+        for lo, hi in [(55, 60), (60, 65), (65, 70), (70, 75), (75, 80), (80, 100)]:
+            band = df_s[(df_s["total"] >= lo) & (df_s["total"] < hi)]
+            if len(band) > 0:
+                hit = band["hit"].mean() * 100
+                avg_r = band["pct"].mean()
+                line = f"  {lo}-{hi}: {len(band)}件 的中{hit:.0f}% 平均{avg_r:+.2f}%"
+                print(line)
+                discord_lines.append(f"{lo}-{hi}: {len(band)}件 {hit:.0f}% {avg_r:+.2f}%")
 
-                print(
-                    f"  {factor:12s}: "
-                    f"高スコア群 {high_hit:.0f}%({high_avg:+.1f}%) "
-                    f"/ 低スコア群 {low_hit:.0f}%({low_avg:+.1f}%) "
-                    f"差 {diff:+.0f}% [{indicator}]"
-                )
-
-            # スコア帯別の的中率
-            print(f"\nスコア帯別の的中率:")
-            print("-" * 50)
-            bins = [(60, 65), (65, 70), (70, 75), (75, 80), (80, 100)]
-            for lo, hi in bins:
-                band = df_scores[(df_scores["total"] >= lo) & (df_scores["total"] < hi)]
-                if len(band) > 0:
-                    hit_rate = band["hit"].mean() * 100
-                    avg_ret = band["pct"].mean()
-                    print(f"  スコア {lo}-{hi}: {len(band)}件 的中率{hit_rate:.0f}% 平均{avg_ret:+.2f}%")
-
-    # 期間別パフォーマンス
-    print(f"\n期間別パフォーマンス:")
-    print("-" * 50)
+    # 期間別
+    print(f"\n期間別:")
     for r in all_results:
         d = r["cutoff_date"]
-        buy_n = len(r["buy_results"])
-        buy_wins = sum(1 for x in r["buy_results"] if x > 0)
-        buy_avg = sum(r["buy_results"]) / buy_n if buy_n > 0 else 0
-        hit_rate = buy_wins / buy_n * 100 if buy_n > 0 else 0
-        print(f"  {d}: 買い {buy_wins}/{buy_n} ({hit_rate:.0f}%) 平均{buy_avg:+.2f}%")
+        bn = len(r["buy_results"])
+        bw = sum(1 for x in r["buy_results"] if x > 0)
+        ba = sum(r["buy_results"]) / bn if bn > 0 else 0
+        hr = bw / bn * 100 if bn > 0 else 0
+        print(f"  {d}: {bw}/{bn} ({hr:.0f}%) {ba:+.2f}%")
 
     elapsed = time.time() - t0
     print(f"\n総実行時間: {elapsed:.0f}秒")
+    discord_lines.append(f"\n実行時間: {elapsed:.0f}秒")
 
-    # Discord通知（サマリーのみ）
-    if all_buy_results:
-        summary = (
-            f"**大規模バックテスト結果 (5年間×{len(dates)}期間)**\n"
-            f"買い: {total_buy_wins}/{len(all_buy_results)}的中 "
-            f"({total_buy_wins/len(all_buy_results)*100:.0f}%) "
-            f"平均{total_buy_avg:+.2f}%\n"
-        )
-        if all_sell_results:
-            summary += (
-                f"売り: {total_sell_wins}/{len(all_sell_results)}的中 "
-                f"({total_sell_wins/len(all_sell_results)*100:.0f}%) "
-                f"平均{total_sell_avg:+.2f}%\n"
-            )
-        # スコア帯分析も追加
-        if all_score_details:
-            buy_details = [d for d in all_score_details if d["direction"] == "buy"]
-            if buy_details:
-                df_s = pd.DataFrame(buy_details)
-                summary += "\nスコア帯別的中率:\n"
-                for lo, hi in [(60, 65), (65, 70), (70, 75), (75, 80), (80, 100)]:
-                    band = df_s[(df_s["total"] >= lo) & (df_s["total"] < hi)]
-                    if len(band) > 0:
-                        summary += f"  {lo}-{hi}: {len(band)}件 {band['hit'].mean()*100:.0f}%\n"
-
-        send_discord(summary)
-
+    send_discord("\n".join(discord_lines))
     return 0
 
 
