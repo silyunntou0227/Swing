@@ -73,25 +73,38 @@ def _format_position_sizes(
 
     1%ルール: 1トレードの最大損失 = 総資金の1%
     株数 = (資金 × 1%) / 1株あたりリスク（損切り幅）
-    100株単位に切り下げ
+    100株単位に切り下げ。100株未満になる場合は資金不足。
     """
     lines = []
-    for capital in POSITION_SIZE_CAPITALS:
-        risk_budget = capital * 0.01  # 1%
-        raw_shares = risk_budget / risk_per_share
-        shares = max(100, (int(raw_shares) // 100) * 100)
-        cost = shares * close
-        max_loss = shares * risk_per_share
-        capital_pct = cost / capital * 100
+    min_lot = 100  # 単元株
+    min_cost = min_lot * close
 
-        label = f"¥{capital:,.0f}"
-        if cost > capital:
-            lines.append(f"{label}: 資金不足（最低{100}株=¥{100*close:,.0f}）")
-        else:
+    for capital in POSITION_SIZE_CAPITALS:
+        risk_budget = capital * 0.01  # 1%ルール上限
+        raw_shares = risk_budget / risk_per_share
+        shares = (int(raw_shares) // min_lot) * min_lot  # 100株単位に切り下げ
+
+        label = f"¥{capital // 10000}万"
+
+        # 100株未満 or 購入代金が資金超過 → 資金不足
+        if shares < min_lot or min_cost > capital:
+            # 100株買った場合の実際のリスクを参考表示
+            loss_100 = min_lot * risk_per_share
+            loss_pct = loss_100 / capital * 100
             lines.append(
-                f"{label}: **{shares}株** (¥{cost:,.0f}, "
-                f"資金の{capital_pct:.0f}%) "
-                f"最大損失¥{max_loss:,.0f}"
+                f"{label}: 1%ルール内で購入不可 "
+                f"(100株=¥{min_cost:,.0f}, "
+                f"損失¥{loss_100:,.0f}={loss_pct:.1f}%)"
+            )
+        else:
+            cost = shares * close
+            max_loss = shares * risk_per_share
+            loss_pct = max_loss / capital * 100
+            capital_pct = cost / capital * 100
+            lines.append(
+                f"{label}: **{shares}株** "
+                f"(投資額¥{cost:,.0f} = 資金の{capital_pct:.0f}%) "
+                f"最大損失¥{max_loss:,.0f}({loss_pct:.1f}%)"
             )
 
     return "\n".join(lines)
