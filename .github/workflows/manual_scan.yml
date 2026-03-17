@@ -16,7 +16,7 @@ on:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -28,30 +28,6 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
-
-      - name: Test V2 API endpoints
-        run: |
-          python3 -c "
-          import requests, os
-          key = os.environ['JQUANTS_API_KEY']
-          headers = {'x-api-key': key}
-          endpoints = [
-              '/v2/equities/listed',
-              '/v2/equities/bars/daily?date=2026-03-17',
-              '/v2/fins/statements',
-              '/v2/fins/announcement',
-              '/v2/listed/info',
-              '/v2/prices/daily_quotes?date=20260317',
-          ]
-          for ep in endpoints:
-              try:
-                  r = requests.get(f'https://api.jquants.com{ep}', headers=headers, timeout=10)
-                  print(f'{r.status_code} {ep} -> keys: {list(r.json().keys())[:5] if r.status_code == 200 else r.text[:100]}')
-              except Exception as e:
-                  print(f'ERR {ep} -> {e}')
-          "
-        env:
-          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
 
       - name: Run stock scan
         run: python -m src.main
