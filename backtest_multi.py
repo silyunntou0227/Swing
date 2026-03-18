@@ -208,6 +208,8 @@ def run_single_backtest(
             "ichimoku": round(c.ichimoku_score, 1),
             "pattern": round(c.pattern_score, 1),
             "risk_reward": round(c.risk_reward_score, 1),
+            "sector": round(c.sector_score, 1),
+            "sector_name": c.sector_name,
             "pct": round(pct, 2), "max_pct": round(max_pct, 2),
             "min_pct": round(min_pct, 2), "hit": pct > 0,
             "hold_days": hold,
@@ -233,8 +235,14 @@ def run_single_backtest(
             "total": round(c.total_score, 1),
             "trend": round(c.trend_score, 1),
             "macd": round(c.macd_score, 1),
+            "volume": round(c.volume_score, 1),
+            "fundamental": round(c.fundamental_score, 1),
             "rsi": round(c.rsi_score, 1),
             "ichimoku": round(c.ichimoku_score, 1),
+            "pattern": round(c.pattern_score, 1),
+            "risk_reward": round(c.risk_reward_score, 1),
+            "sector": round(c.sector_score, 1),
+            "sector_name": c.sector_name,
             "pct": round(pct, 2), "hit": pct < 0,
         })
 
@@ -331,7 +339,7 @@ def main():
         print("-" * 60)
         discord_lines.append(f"\n**スコア内訳分析 ({len(buy_details)}件)**")
 
-        factors = ["trend", "macd", "volume", "fundamental", "rsi", "ichimoku", "pattern", "risk_reward"]
+        factors = ["trend", "macd", "volume", "fundamental", "rsi", "ichimoku", "pattern", "risk_reward", "sector"]
         for factor in factors:
             if factor not in df_s.columns:
                 continue
@@ -363,6 +371,24 @@ def main():
                 line = f"  {lo}-{hi}: {len(band)}件 的中{hit:.0f}% 平均{avg_r:+.2f}%"
                 print(line)
                 discord_lines.append(f"{lo}-{hi}: {len(band)}件 {hit:.0f}% {avg_r:+.2f}%")
+
+    # セクター別分析
+    if buy_details:
+        df_s = pd.DataFrame(buy_details)
+        if "sector_name" in df_s.columns:
+            sector_groups = df_s.groupby("sector_name")
+            print(f"\nセクター別的中率（買い）:")
+            discord_lines.append(f"\n**セクター別的中率**")
+            for sector_name, group in sorted(
+                sector_groups, key=lambda x: len(x[1]), reverse=True
+            ):
+                if len(group) < 2 or not sector_name:
+                    continue
+                hit = group["hit"].mean() * 100
+                avg_r = group["pct"].mean()
+                line = f"  {sector_name}: {len(group)}件 的中{hit:.0f}% 平均{avg_r:+.2f}%"
+                print(line)
+                discord_lines.append(f"{sector_name}: {len(group)}件 {hit:.0f}% {avg_r:+.2f}%")
 
     # 期間別
     print(f"\n期間別:")
