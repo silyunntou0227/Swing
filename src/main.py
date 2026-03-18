@@ -21,6 +21,7 @@ from src.config import (
     TOP_SELL_CANDIDATES,
     LINE_CHANNEL_TOKEN,
     LINE_USER_ID,
+    validate_config,
 )
 
 
@@ -64,6 +65,13 @@ def _is_jpx_holiday(dt: datetime.date) -> bool:
 def main(channel: str = "all") -> int:
     start_time = time.time()
     logger.info("=== 日本株スイングトレードスキャン開始 ===")
+
+    # 設定パラメータの整合性検証
+    config_errors = validate_config()
+    if config_errors:
+        for err in config_errors:
+            logger.error(f"設定エラー: {err}")
+        return 1
 
     # 東証休場日チェック — 休場日は候補が出ないためスキップ
     today = datetime.date.today()

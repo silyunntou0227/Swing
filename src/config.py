@@ -136,6 +136,37 @@ MACRO_SCORE_MAX = 5
 MACRO_SCORE_MIN = -5
 
 # ============================================================
+# スコアリング閾値（scorer.py で使用）
+# ============================================================
+# ボリュームスコア閾値
+VOLUME_SCORE_HIGH = 2.0       # 出来高比率: 高（+30pt）
+VOLUME_SCORE_MID = 1.5        # 出来高比率: 中（+20pt）
+VOLUME_SCORE_LOW = 1.2        # 出来高比率: 低（+10pt）
+
+# RSI(2) Connors スコア閾値
+RSI2_EXTREME_OVERSOLD = 5     # 極端な売られすぎ（+25pt）
+RSI2_OVERSOLD = 10            # 売られすぎ（+18pt）
+RSI2_MILD_OVERSOLD = 20       # やや売られすぎ（+8pt）
+RSI2_MILD_OVERBOUGHT = 80     # やや買われすぎ（+8pt for sell）
+RSI2_OVERBOUGHT = 90          # 買われすぎ
+RSI2_EXTREME_OVERBOUGHT = 95  # 極端な買われすぎ（+25pt for sell）
+
+# ATRリスク/リワード閾値
+ATR_RATIO_OPTIMAL_MIN = 0.01  # 最適ボラティリティ下限
+ATR_RATIO_OPTIMAL_MAX = 0.04  # 最適ボラティリティ上限
+ATR_RATIO_EXCESSIVE = 0.06    # 過大ボラティリティ
+
+# 保有日数予測
+HOLD_DAYS_MEAN_REVERSION = 3  # 平均回帰シグナル
+HOLD_DAYS_BREAKOUT = 8        # ブレイクアウトシグナル
+HOLD_DAYS_MOMENTUM = 7        # モメンタムシグナル
+HOLD_DAYS_DEFAULT = 5         # その他
+
+# パターン名リスト
+BUY_PATTERNS = ["包み足(強気)", "はらみ足(強気)", "ハンマー", "三兵"]
+SELL_PATTERNS = ["包み足(弱気)", "はらみ足(弱気)", "シューティングスター", "三羽烏"]
+
+# ============================================================
 # スコアリングウェイト
 # ============================================================
 # 保有期間予測パラメータ
@@ -174,6 +205,46 @@ class ScoringWeights:
 
 
 SCORING_WEIGHTS = ScoringWeights()
+
+
+def validate_config() -> list[str]:
+    """設定パラメータの整合性を検証
+
+    Returns:
+        エラーメッセージのリスト（空なら全て正常）
+    """
+    errors = []
+
+    # ウェイト合計
+    if not SCORING_WEIGHTS.validate():
+        errors.append("スコアリングウェイトの合計が1.0ではありません")
+
+    # SMA順序
+    if not (SMA_SHORT < SMA_MEDIUM < SMA_LONG < SMA_VERY_LONG):
+        errors.append(f"SMA期間の順序が不正: {SMA_SHORT}, {SMA_MEDIUM}, {SMA_LONG}, {SMA_VERY_LONG}")
+
+    # RSI閾値
+    if not (RSI_OVERSOLD < RSI_OVERBOUGHT):
+        errors.append(f"RSI閾値の順序が不正: oversold={RSI_OVERSOLD}, overbought={RSI_OVERBOUGHT}")
+
+    if not (RSI2_EXTREME_OVERSOLD < RSI2_OVERSOLD < RSI2_MILD_OVERSOLD):
+        errors.append("RSI(2)売られすぎ閾値の順序が不正")
+
+    if not (RSI2_MILD_OVERBOUGHT < RSI2_OVERBOUGHT < RSI2_EXTREME_OVERBOUGHT):
+        errors.append("RSI(2)買われすぎ閾値の順序が不正")
+
+    # ATR比率
+    if not (ATR_RATIO_OPTIMAL_MIN < ATR_RATIO_OPTIMAL_MAX < ATR_RATIO_EXCESSIVE):
+        errors.append("ATR比率閾値の順序が不正")
+
+    # リスク管理
+    if not (0 < RISK_PER_TRADE <= 0.05):
+        errors.append(f"RISK_PER_TRADE が範囲外: {RISK_PER_TRADE} (0-5%)")
+
+    if TAKE_PROFIT_RR_RATIO < 1.0:
+        errors.append(f"TAKE_PROFIT_RR_RATIO が1.0未満: {TAKE_PROFIT_RR_RATIO}")
+
+    return errors
 
 # ============================================================
 # リスク管理

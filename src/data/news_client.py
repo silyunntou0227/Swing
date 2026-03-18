@@ -126,6 +126,10 @@ class NewsClient:
             logger.warning(f"Google News RSS エラー: {e}")
             return pd.DataFrame()
 
+        if not hasattr(feed, "entries") or not feed.entries:
+            logger.warning("Google News RSS: エントリーが空です")
+            return pd.DataFrame()
+
         records = [
             {
                 "title": entry.get("title", ""),
@@ -151,6 +155,9 @@ class NewsClient:
             feed = feedparser.parse(url)
         except Exception as e:
             logger.warning(f"Google News キーワード検索エラー: {e}")
+            return pd.DataFrame()
+
+        if not hasattr(feed, "entries") or not feed.entries:
             return pd.DataFrame()
 
         records = [

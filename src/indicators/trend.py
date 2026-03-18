@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import logging
-from typing import List
 
 import numpy as np
 import pandas as pd
@@ -169,9 +168,9 @@ def _is_perfect_order_bear(df: pd.DataFrame) -> pd.Series:
 # シグナル検出: ゴールデンクロス / デッドクロス
 # ============================================================
 
-def detect_golden_dead_cross(df: pd.DataFrame) -> List[str]:
+def detect_golden_dead_cross(df: pd.DataFrame) -> list[str]:
     """SMA5 と SMA25 のゴールデンクロス / デッドクロスを検出する。"""
-    signals: List[str] = []
+    signals: list[str] = []
     s5 = f"SMA_{SMA_SHORT}"
     s25 = f"SMA_{SMA_MEDIUM}"
 
@@ -192,9 +191,9 @@ def detect_golden_dead_cross(df: pd.DataFrame) -> List[str]:
 # シグナル検出: MACDクロス
 # ============================================================
 
-def detect_macd_cross(df: pd.DataFrame) -> List[str]:
+def detect_macd_cross(df: pd.DataFrame) -> list[str]:
     """MACDラインとシグナルラインのクロスを検出する。"""
-    signals: List[str] = []
+    signals: list[str] = []
     if len(df) < 2:
         return signals
     for col in ("MACD", "MACD_Signal"):
@@ -219,9 +218,9 @@ def detect_macd_cross(df: pd.DataFrame) -> List[str]:
 # シグナル検出: 一目均衡表
 # ============================================================
 
-def detect_ichimoku_signals(df: pd.DataFrame) -> List[str]:
+def detect_ichimoku_signals(df: pd.DataFrame) -> list[str]:
     """一目均衡表のシグナルを検出する。"""
-    signals: List[str] = []
+    signals: list[str] = []
     required = ["Ichimoku_Tenkan", "Ichimoku_Kijun", "Ichimoku_SenkouA", "Ichimoku_SenkouB"]
     if len(df) < 2 or not all(col in df.columns for col in required):
         return signals
@@ -280,9 +279,9 @@ def detect_granville_signals(
     df: pd.DataFrame,
     sma_col: str = f"SMA_{SMA_MEDIUM}",
     close_col: str = "Close",
-) -> List[str]:
+) -> list[str]:
     """グランビルの法則（8つのルール）に基づくシグナルを検出する。"""
-    signals: List[str] = []
+    signals: list[str] = []
     if sma_col not in df.columns or len(df) < 4:
         return signals
 
@@ -320,9 +319,9 @@ def detect_granville_signals(
 # シグナル検出: SMAアラインメント
 # ============================================================
 
-def detect_sma_alignment(df: pd.DataFrame) -> List[str]:
+def detect_sma_alignment(df: pd.DataFrame) -> list[str]:
     """SMAパーフェクトオーダーの発生・継続を検出する。"""
-    signals: List[str] = []
+    signals: list[str] = []
     if len(df) < 2:
         return signals
 

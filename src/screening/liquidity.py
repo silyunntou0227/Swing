@@ -26,30 +26,32 @@ def filter_liquidity(
     if prices.empty:
         return codes
 
-    passed = []
-    for code in codes:
-        stock_prices = prices[prices["Code"] == code]
-        if len(stock_prices) < lookback:
+    # 対象銘柄のデータのみ抽出（1回のフィルタリング）
+    target_prices = prices[prices["Code"].isin(codes)]
+    if target_prices.empty:
+        logger.info(f"流動性フィルタ: {len(codes)} → 0銘柄（価格データなし）")
+        return []
+
+    has_turnover = "TurnoverValue" in target_prices.columns
+
+    # groupby で一括処理（N+1 → 1回の走査）
+    passed_codes = []
+    for code, group in target_prices.groupby("Code"):
+        if len(group) < lookback:
             continue
-
-        recent = stock_prices.tail(lookback)
-
-        # 平均出来高チェック
-        avg_volume = recent["Volume"].mean()
-        if avg_volume < VOLUME_AVG_MIN:
+        recent = group.tail(lookback)
+        if recent["Volume"].mean() < VOLUME_AVG_MIN:
             continue
-
-        # 平均売買代金チェック
-        if "TurnoverValue" in recent.columns:
+        if has_turnover:
             avg_turnover = recent["TurnoverValue"].mean()
         else:
-            # 売買代金 ≈ 終値 × 出来高
             avg_turnover = (recent["Close"] * recent["Volume"]).mean()
+        if avg_turnover >= TURNOVER_MIN:
+            passed_codes.append(code)
 
-        if avg_turnover < TURNOVER_MIN:
-            continue
-
-        passed.append(code)
+    # 元の codes の順序を維持
+    codes_set = set(passed_codes)
+    passed = [c for c in codes if c in codes_set]
 
     logger.info(f"流動性フィルタ: {len(codes)} → {len(passed)}銘柄")
     return passed

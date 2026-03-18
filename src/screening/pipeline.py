@@ -97,6 +97,7 @@ class ScreeningPipeline:
         """Layer 0: ユニバースフィルタ"""
         stocks = market_data.stocks.copy()
         if stocks.empty:
+            logger.warning("Layer 0: 銘柄リストが空です — データ取得に失敗した可能性があります")
             return stocks
 
         # 対象市場フィルタ
@@ -141,6 +142,21 @@ class ScreeningPipeline:
         # まず流動性でフィルタ
         liquid_codes = filter_liquidity(codes, market_data.prices)
 
+        # 価格データを銘柄ごとにグループ化（ループ内での繰り返しフィルタを回避）
+        liquid_set = set(liquid_codes)
+        prices_by_code = {
+            code: group
+            for code, group in market_data.prices[
+                market_data.prices["Code"].isin(liquid_set)
+            ].groupby("Code")
+        }
+
+        # 銘柄名辞書を事前構築（ループ内のN+1フィルタリングを回避）
+        name_map: dict[str, str] = {}
+        if not stocks_info.empty and "Code" in stocks_info.columns:
+            for _, row in stocks_info[["Code", "CompanyName"]].dropna().iterrows():
+                name_map[row["Code"]] = row.get("CompanyName", "")
+
         candidates = []
         total = len(liquid_codes)
         skipped_short = 0
@@ -156,17 +172,18 @@ class ScreeningPipeline:
                     f"(候補{len(candidates)}件, {elapsed:.0f}s)"
                 )
 
-            stock_prices = market_data.prices[market_data.prices["Code"] == code]
-            if len(stock_prices) < 50:
+            stock_prices = prices_by_code.get(code)
+            if stock_prices is None or len(stock_prices) < 50:
                 skipped_short += 1
                 continue
 
-            stock_prices = stock_prices.copy().reset_index(drop=True)
+            stock_prices = stock_prices.reset_index(drop=True)
 
             # テクニカル指標を1回だけ計算（Layer 2+3 共有）
             try:
                 stock_prices = calculate_all_indicators(stock_prices)
-            except Exception:
+            except (KeyError, ValueError, TypeError) as e:
+                logger.debug(f"テクニカル指標計算失敗 ({code}): {e}")
                 continue
 
             if len(stock_prices) < 30:
@@ -185,7 +202,8 @@ class ScreeningPipeline:
             # --- Layer 3 チェック: エントリーシグナル ---
             try:
                 signals = get_all_signals(stock_prices)
-            except Exception:
+            except (KeyError, ValueError, TypeError) as e:
+                logger.debug(f"シグナル検出失敗 ({code}): {e}")
                 continue
 
             if not signals:
@@ -199,12 +217,8 @@ class ScreeningPipeline:
                 skipped_signal += 1
                 continue
 
-            # 銘柄名取得
-            name = ""
-            if not stocks_info.empty and "Code" in stocks_info.columns:
-                name_row = stocks_info[stocks_info["Code"] == code]
-                if not name_row.empty:
-                    name = name_row.iloc[0].get("CompanyName", code)
+            # 銘柄名取得（事前構築した辞書から O(1) で取得）
+            name = name_map.get(code, "")
 
             close = stock_prices["Close"].iloc[-1] if "Close" in stock_prices.columns else 0.0
 

@@ -10,6 +10,12 @@ from src.config import (
     SCORING_WEIGHTS, MACRO_SCORE_MAX, MACRO_SCORE_MIN,
     MAX_HOLDING_DAYS, TRAILING_STOP_ATR_MULT, PROFIT_TARGET_ATR_MULT,
     PARTIAL_EXIT_ATR_MULT,
+    VOLUME_SCORE_HIGH, VOLUME_SCORE_MID, VOLUME_SCORE_LOW,
+    RSI2_EXTREME_OVERSOLD, RSI2_OVERSOLD, RSI2_MILD_OVERSOLD,
+    RSI2_MILD_OVERBOUGHT, RSI2_OVERBOUGHT, RSI2_EXTREME_OVERBOUGHT,
+    ATR_RATIO_OPTIMAL_MIN, ATR_RATIO_OPTIMAL_MAX, ATR_RATIO_EXCESSIVE,
+    HOLD_DAYS_MEAN_REVERSION, HOLD_DAYS_BREAKOUT, HOLD_DAYS_MOMENTUM,
+    HOLD_DAYS_DEFAULT, BUY_PATTERNS, SELL_PATTERNS,
 )
 from src.data.data_loader import MarketData
 from src.data.margin_client import MarginClient
@@ -75,8 +81,8 @@ class MultiFactorScorer:
                     margin_data, market_phase,
                 )
                 scored.append(sc)
-            except Exception as e:
-                logger.warning(f"スコアリング失敗 ({candidate.code}): {e}")
+            except (KeyError, ValueError, TypeError, ZeroDivisionError) as e:
+                logger.warning(f"スコアリング失敗 ({candidate.code}): {type(e).__name__}: {e}")
 
         return scored
 
@@ -248,11 +254,11 @@ class MultiFactorScorer:
 
         vol_ratio = last.get("VolumeRatio")
         if pd.notna(vol_ratio):
-            if vol_ratio > 2.0:
+            if vol_ratio > VOLUME_SCORE_HIGH:
                 score += 30
-            elif vol_ratio > 1.5:
+            elif vol_ratio > VOLUME_SCORE_MID:
                 score += 20
-            elif vol_ratio > 1.2:
+            elif vol_ratio > VOLUME_SCORE_LOW:
                 score += 10
 
         # OBVトレンド
@@ -295,22 +301,22 @@ class MultiFactorScorer:
         # --- RSI(2): 短期エントリータイミング（ウェイト60%）---
         if pd.notna(rsi2):
             if direction == "buy":
-                if rsi2 < 5:
+                if rsi2 < RSI2_EXTREME_OVERSOLD:
                     score += 25   # 極端な売られすぎ = 最強シグナル
-                elif rsi2 < 10:
+                elif rsi2 < RSI2_OVERSOLD:
                     score += 18   # 売られすぎ = 強シグナル
-                elif rsi2 < 20:
+                elif rsi2 < RSI2_MILD_OVERSOLD:
                     score += 8    # やや売られすぎ
-                elif rsi2 > 90:
+                elif rsi2 > RSI2_OVERBOUGHT:
                     score -= 10   # 買われすぎ
             else:
-                if rsi2 > 95:
+                if rsi2 > RSI2_EXTREME_OVERBOUGHT:
                     score += 25
-                elif rsi2 > 90:
+                elif rsi2 > RSI2_OVERBOUGHT:
                     score += 18
-                elif rsi2 > 80:
+                elif rsi2 > RSI2_MILD_OVERBOUGHT:
                     score += 8
-                elif rsi2 < 10:
+                elif rsi2 < RSI2_OVERSOLD:
                     score -= 10
 
         return min(100, max(0, score))
@@ -349,10 +355,7 @@ class MultiFactorScorer:
     def _calc_pattern_score(self, signals: list[str], direction: str) -> float:
         """パターンスコア（0-100）"""
         score = 50.0
-        buy_patterns = ["包み足(強気)", "はらみ足(強気)", "ハンマー", "三兵"]
-        sell_patterns = ["包み足(弱気)", "はらみ足(弱気)", "シューティングスター", "三羽烏"]
-
-        target = buy_patterns if direction == "buy" else sell_patterns
+        target = BUY_PATTERNS if direction == "buy" else SELL_PATTERNS
         for pattern in target:
             if any(pattern in s for s in signals):
                 score += 15
@@ -370,9 +373,9 @@ class MultiFactorScorer:
         if pd.notna(atr) and atr > 0 and close > 0:
             # ATR対価格比率（ボラティリティが適度か）
             atr_ratio = atr / close
-            if 0.01 <= atr_ratio <= 0.04:
+            if ATR_RATIO_OPTIMAL_MIN <= atr_ratio <= ATR_RATIO_OPTIMAL_MAX:
                 score += 20  # 適度なボラティリティ
-            elif atr_ratio > 0.06:
+            elif atr_ratio > ATR_RATIO_EXCESSIVE:
                 score -= 10  # ボラティリティ過大
 
         return min(100, max(0, score))
@@ -420,16 +423,16 @@ class MultiFactorScorer:
         )
 
         if is_mean_reversion:
-            hold_days = 3  # 平均回帰: 2-5日
+            hold_days = HOLD_DAYS_MEAN_REVERSION
             strategy_type = "平均回帰(RSI)"
         elif is_breakout:
-            hold_days = 8  # ブレイクアウト: 7-10日
+            hold_days = HOLD_DAYS_BREAKOUT
             strategy_type = "ブレイクアウト"
         elif is_momentum:
-            hold_days = 7  # モメンタム: 5-10日
+            hold_days = HOLD_DAYS_MOMENTUM
             strategy_type = "モメンタム"
         else:
-            hold_days = 5  # その他: 5日
+            hold_days = HOLD_DAYS_DEFAULT
             strategy_type = "標準"
 
         hold_days = min(hold_days, MAX_HOLDING_DAYS)

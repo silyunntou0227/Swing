@@ -19,33 +19,32 @@ from src.screening.pipeline import ScreeningPipeline
 from src.scoring.scorer import MultiFactorScorer
 from src.data.data_loader import MarketData
 from src.data.yahoo_client import YahooClient
-from src.config import TOP_BUY_CANDIDATES, TOP_SELL_CANDIDATES, DISCORD_WEBHOOK_URL
+from src.config import TOP_BUY_CANDIDATES, TOP_SELL_CANDIDATES
 from src.utils.logging_config import logger
+from src.utils.discord_helper import send_discord_text as send_discord
 
 
-def send_discord(content: str) -> None:
-    """Discord Webhook にテキストを送信"""
-    if not DISCORD_WEBHOOK_URL:
-        return
-    import requests
-    try:
-        # 2000文字制限対策: 分割送信
-        for i in range(0, len(content), 1900):
-            chunk = content[i:i+1900]
-            requests.post(
-                DISCORD_WEBHOOK_URL,
-                json={"content": chunk},
-                timeout=10,
-            )
-            time.sleep(0.5)
-    except Exception as e:
-        print(f"Discord送信エラー: {e}")
+def _default_dates() -> tuple[str, str]:
+    """環境変数未設定時のデフォルト日付を動的に計算
+
+    cutoff = 5営業日前, check = 今日
+    """
+    today = date.today()
+    # 営業日を遡る（土日スキップ）
+    cutoff = today
+    skip = 0
+    while skip < 5:
+        cutoff -= timedelta(days=1)
+        if cutoff.weekday() < 5:  # 月-金
+            skip += 1
+    return cutoff.isoformat(), today.isoformat()
 
 
 def main():
-    # 環境変数またはデフォルト値
-    cutoff_str = os.environ.get("CUTOFF_DATE", "2026-03-13")
-    check_str = os.environ.get("CHECK_DATE", "2026-03-18")
+    # 環境変数またはデフォルト値（動的計算）
+    default_cutoff, default_check = _default_dates()
+    cutoff_str = os.environ.get("CUTOFF_DATE", default_cutoff)
+    check_str = os.environ.get("CHECK_DATE", default_check)
     CUTOFF_DATE = date.fromisoformat(cutoff_str)
     CHECK_DATE = date.fromisoformat(check_str)
 
@@ -199,11 +198,37 @@ def main():
     if buy_results:
         buy_wins = sum(1 for r in buy_results if r > 0)
         buy_avg = sum(buy_results) / len(buy_results)
+        gains = [r for r in buy_results if r > 0]
+        losses = [r for r in buy_results if r <= 0]
+
         line = (f"買い: {buy_wins}/{len(buy_results)}的中 "
                 f"({buy_wins/len(buy_results)*100:.0f}%) "
                 f"平均{buy_avg:+.2f}%")
         output_lines.append(line)
         print(f"  {line}")
+
+        # シャープレシオ
+        if len(buy_results) >= 2:
+            std_ret = (sum((r - buy_avg) ** 2 for r in buy_results) / (len(buy_results) - 1)) ** 0.5
+            sharpe = buy_avg / std_ret if std_ret > 0 else 0.0
+        else:
+            sharpe = 0.0
+
+        # 最大ドローダウン
+        cum, peak, max_dd = 0.0, 0.0, 0.0
+        for r in buy_results:
+            cum += r
+            peak = max(peak, cum)
+            max_dd = max(max_dd, peak - cum)
+
+        # プロフィットファクター
+        total_gain = sum(gains) if gains else 0
+        total_loss = abs(sum(losses)) if losses else 0
+        pf = total_gain / total_loss if total_loss > 0 else float("inf")
+
+        metrics_line = f"Sharpe: {sharpe:.2f} | MaxDD: {max_dd:.2f}% | PF: {pf:.2f}"
+        output_lines.append(metrics_line)
+        print(f"  {metrics_line}")
 
     if sell_results:
         sell_wins = sum(1 for r in sell_results if r < 0)

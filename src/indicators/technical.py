@@ -58,64 +58,32 @@ def get_all_signals(df: pd.DataFrame) -> list[str]:
 
     signals = []
 
+    # 各シグナル検出を安全に実行するヘルパー
+    def _safe_detect(func, name: str) -> list[str]:
+        try:
+            return func(df)
+        except (KeyError, ValueError, IndexError, TypeError) as e:
+            logger.debug(f"シグナル検出エラー ({name}): {e}")
+            return []
+
     # トレンド系シグナル
-    try:
-        gc_dc = detect_golden_dead_cross(df)
-        signals.extend(gc_dc)
-    except Exception:
-        pass
-
-    try:
-        macd_signals = detect_macd_cross(df)
-        signals.extend(macd_signals)
-    except Exception:
-        pass
-
-    try:
-        ichimoku_signals = detect_ichimoku_signals(df)
-        signals.extend(ichimoku_signals)
-    except Exception:
-        pass
-
-    try:
-        alignment = detect_sma_alignment(df)
-        signals.extend(alignment)
-    except Exception:
-        pass
-
-    try:
-        granville = detect_granville_signals(df)
-        signals.extend(granville)
-    except Exception:
-        pass
+    signals.extend(_safe_detect(detect_golden_dead_cross, "GC/DC"))
+    signals.extend(_safe_detect(detect_macd_cross, "MACD"))
+    signals.extend(_safe_detect(detect_ichimoku_signals, "一目均衡表"))
+    signals.extend(_safe_detect(detect_sma_alignment, "SMA配列"))
+    signals.extend(_safe_detect(detect_granville_signals, "グランビル"))
 
     # オシレーター系シグナル
-    try:
-        osc_signals = get_oscillator_signals(df)
-        signals.extend(osc_signals)
-    except Exception:
-        pass
+    signals.extend(_safe_detect(get_oscillator_signals, "オシレーター"))
 
     # 出来高系シグナル
-    try:
-        vol_signals = get_volume_signals(df)
-        signals.extend(vol_signals)
-    except Exception:
-        pass
+    signals.extend(_safe_detect(get_volume_signals, "出来高"))
 
     # パターン系シグナル
-    try:
-        pat_signals = get_pattern_signals(df)
-        signals.extend(pat_signals)
-    except Exception:
-        pass
+    signals.extend(_safe_detect(get_pattern_signals, "パターン"))
 
     # 波動分析シグナル
-    try:
-        wave_signals = get_wave_signals(df)
-        signals.extend(wave_signals)
-    except Exception:
-        pass
+    signals.extend(_safe_detect(get_wave_signals, "波動"))
 
     return signals
 

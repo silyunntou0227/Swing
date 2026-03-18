@@ -5,6 +5,7 @@ GitHub Actions 60分以内に完了する設計。
 """
 from __future__ import annotations
 
+import math
 import os
 import sys
 import time
@@ -18,27 +19,15 @@ from src.data.stock_list import fetch_jpx_stock_list, get_tradeable_codes
 from src.screening.pipeline import ScreeningPipeline
 from src.scoring.scorer import MultiFactorScorer
 from src.data.data_loader import MarketData
-from src.config import TOP_BUY_CANDIDATES, TOP_SELL_CANDIDATES, DISCORD_WEBHOOK_URL
+from src.config import TOP_BUY_CANDIDATES, TOP_SELL_CANDIDATES
 from src.utils.logging_config import logger
-
-
-def send_discord(content: str) -> None:
-    """Discord送信"""
-    if not DISCORD_WEBHOOK_URL:
-        return
-    import requests
-    try:
-        for i in range(0, len(content), 1900):
-            requests.post(DISCORD_WEBHOOK_URL, json={"content": content[i:i+1900]}, timeout=10)
-            time.sleep(0.5)
-    except Exception as e:
-        print(f"Discord送信エラー: {e}")
+from src.utils.discord_helper import send_discord_text as send_discord
 
 
 def generate_random_dates(n: int = 20) -> list[date]:
     """5年間からランダムに営業日を選択（固定シード）"""
-    start = date(2021, 4, 1)
-    end = date(2026, 3, 6)
+    end = date.today() - timedelta(days=10)  # 検証に余裕を持たせる
+    start = date(end.year - 5, end.month, end.day)
     all_dates = []
     current = start
     while current <= end:
@@ -307,16 +296,51 @@ def main():
 
     if all_buy:
         wins = sum(1 for r in all_buy if r > 0)
+        losses = [r for r in all_buy if r <= 0]
+        gains = [r for r in all_buy if r > 0]
         avg = sum(all_buy) / len(all_buy)
+
+        # シャープレシオ（リスクフリーレート0想定、年率換算なし）
+        if len(all_buy) >= 2:
+            mean_ret = sum(all_buy) / len(all_buy)
+            std_ret = (sum((r - mean_ret) ** 2 for r in all_buy) / (len(all_buy) - 1)) ** 0.5
+            sharpe = mean_ret / std_ret if std_ret > 0 else 0.0
+        else:
+            sharpe = 0.0
+
+        # 最大ドローダウン（累積リターンベース）
+        cumulative = 0.0
+        peak = 0.0
+        max_dd = 0.0
+        for r in all_buy:
+            cumulative += r
+            if cumulative > peak:
+                peak = cumulative
+            dd = peak - cumulative
+            if dd > max_dd:
+                max_dd = dd
+
+        # プロフィットファクター（総利益 / 総損失）
+        total_gain = sum(gains) if gains else 0
+        total_loss = abs(sum(losses)) if losses else 0
+        profit_factor = total_gain / total_loss if total_loss > 0 else float("inf")
+
         print(f"\n買い候補 全体:")
         print(f"  トレード数: {len(all_buy)}")
         print(f"  的中率: {wins}/{len(all_buy)} ({wins/len(all_buy)*100:.1f}%)")
         print(f"  平均騰落率: {avg:+.2f}%")
         print(f"  最大利益: {max(all_buy):+.2f}%")
         print(f"  最大損失: {min(all_buy):+.2f}%")
+        print(f"  シャープレシオ: {sharpe:.2f}")
+        print(f"  最大ドローダウン: {max_dd:.2f}%")
+        print(f"  プロフィットファクター: {profit_factor:.2f}")
+
         discord_lines.append(
             f"買い: {wins}/{len(all_buy)}的中 ({wins/len(all_buy)*100:.0f}%) "
             f"平均{avg:+.2f}% 最大{max(all_buy):+.1f}%/{min(all_buy):+.1f}%"
+        )
+        discord_lines.append(
+            f"Sharpe: {sharpe:.2f} | MaxDD: {max_dd:.2f}% | PF: {profit_factor:.2f}"
         )
 
     if all_sell:

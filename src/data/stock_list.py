@@ -64,6 +64,30 @@ def fetch_jpx_stock_list() -> pd.DataFrame:
         # カラム名を変換
         df = df.rename(columns=COLUMN_MAP)
 
+        # 必須カラムの検証
+        required = {"Code", "CompanyName", "MarketCodeName"}
+        missing = required - set(df.columns)
+        if missing:
+            logger.warning(
+                f"JPX銘柄一覧: 必須カラム不足 {missing} — "
+                f"JPXのファイル形式が変更された可能性があります。"
+                f"現在のカラム: {list(df.columns[:10])}"
+            )
+            # カラム名が変更されていても、位置ベースのフォールバックを試みる
+            if len(df.columns) >= 3 and "Code" not in df.columns:
+                logger.info("JPX銘柄一覧: 位置ベースのカラム推定を試行")
+                cols = list(df.columns)
+                fallback_map = {}
+                for col in cols:
+                    sample = str(df[col].iloc[0]) if len(df) > 0 else ""
+                    if sample.isdigit() and len(sample) in (4, 5):
+                        fallback_map[col] = "Code"
+                    elif "プライム" in str(df[col].values[:5]) or "スタンダード" in str(df[col].values[:5]):
+                        fallback_map[col] = "MarketCodeName"
+                if fallback_map:
+                    df = df.rename(columns=fallback_map)
+                    logger.info(f"JPX銘柄一覧: フォールバックマッピング適用: {fallback_map}")
+
         # 銘柄コードを4桁に正規化
         if "Code" in df.columns:
             df["Code"] = df["Code"].astype(str).str[:4]
@@ -71,9 +95,11 @@ def fetch_jpx_stock_list() -> pd.DataFrame:
         logger.info(f"JPX公式: {len(df)}銘柄取得")
         return df
 
+    except requests.exceptions.Timeout:
+        logger.warning("JPX銘柄一覧: タイムアウト（30秒）")
+        return pd.DataFrame()
     except Exception as e:
-        logger.warning(f"JPX銘柄一覧取得失敗: {e}")
-        # フォールバック: 空のDataFrameを返す
+        logger.warning(f"JPX銘柄一覧取得失敗: {type(e).__name__}: {e}")
         return pd.DataFrame()
 
 

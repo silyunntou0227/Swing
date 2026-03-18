@@ -40,19 +40,40 @@ class TDnetClient:
         """
         try:
             return self._fetch_from_html()
+        except requests.exceptions.Timeout:
+            logger.warning("TDnet: タイムアウト")
+            return pd.DataFrame()
+        except requests.exceptions.ConnectionError:
+            logger.warning("TDnet: 接続エラー")
+            return pd.DataFrame()
         except Exception as e:
-            logger.warning(f"TDnet HTML取得失敗: {e}")
+            logger.warning(f"TDnet HTML取得失敗: {type(e).__name__}: {e}")
             return pd.DataFrame()
 
     def _fetch_from_html(self) -> pd.DataFrame:
-        """TDnetのHTMLページから開示情報をスクレイピング"""
-        resp = requests.get(TDNET_RSS_URL, timeout=15)
+        """TDnetのHTMLページから開示情報をスクレイピング
+
+        HTML構造変更に備え、複数のパース戦略を試みる。
+        """
+        resp = requests.get(TDNET_RSS_URL, timeout=20)
+        resp.raise_for_status()
         resp.encoding = "utf-8"
-        soup = BeautifulSoup(resp.text, "lxml")
+
+        # lxml が無ければ html.parser にフォールバック
+        try:
+            soup = BeautifulSoup(resp.text, "lxml")
+        except Exception:
+            soup = BeautifulSoup(resp.text, "html.parser")
 
         records = []
+
         # 開示一覧テーブルからデータ抽出
         rows = soup.select("tr")
+        if not rows:
+            logger.warning("TDnet: テーブル行が見つかりません（HTML構造が変更された可能性）")
+            return pd.DataFrame()
+
+        parse_errors = 0
         for row in rows:
             cells = row.select("td")
             if len(cells) < 4:
@@ -85,8 +106,14 @@ class TDnetClient:
                     "disclosure_type": disclosure_type,
                     "url": url,
                 })
-            except (IndexError, KeyError):
+            except (IndexError, KeyError, TypeError) as e:
+                parse_errors += 1
+                if parse_errors <= 3:
+                    logger.debug(f"TDnet: 行パースエラー: {e}")
                 continue
+
+        if parse_errors > 10:
+            logger.warning(f"TDnet: パースエラー多発 ({parse_errors}件) — HTML構造変更の可能性")
 
         df = pd.DataFrame(records)
         logger.info(f"TDnet適時開示: {len(df)}件取得")

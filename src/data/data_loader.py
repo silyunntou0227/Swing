@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 import pandas as pd
+import requests
 
 from src.data.stock_list import fetch_jpx_stock_list, get_tradeable_codes
 from src.data.yahoo_client import YahooClient
@@ -222,8 +223,11 @@ class DataLoader:
             df = client.fetch_today_disclosures()
             logger.info(f"TDnet適時開示: {len(df)}件取得")
             return df
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            logger.warning(f"TDnet適時開示: ネットワークエラー（続行）: {e}")
+            return pd.DataFrame()
         except Exception as e:
-            logger.warning(f"TDnet適時開示取得失敗（続行）: {e}")
+            logger.warning(f"TDnet適時開示取得失敗（続行）: {type(e).__name__}: {e}")
             return pd.DataFrame()
 
     def _load_edinet(self) -> pd.DataFrame:
@@ -234,8 +238,11 @@ class DataLoader:
             df = client.fetch_recent_filings()
             logger.info(f"EDINET開示: {len(df)}件取得")
             return df
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            logger.warning(f"EDINET: ネットワークエラー（続行）: {e}")
+            return pd.DataFrame()
         except Exception as e:
-            logger.warning(f"EDINET開示取得失敗（続行）: {e}")
+            logger.warning(f"EDINET開示取得失敗（続行）: {type(e).__name__}: {e}")
             return pd.DataFrame()
 
     def _load_news(self) -> pd.DataFrame:
@@ -246,8 +253,11 @@ class DataLoader:
             df = client.fetch_market_news()
             logger.info(f"ニュース: {len(df)}件取得")
             return df
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            logger.warning(f"ニュース: ネットワークエラー（続行）: {e}")
+            return pd.DataFrame()
         except Exception as e:
-            logger.warning(f"ニュース取得失敗（続行）: {e}")
+            logger.warning(f"ニュース取得失敗（続行）: {type(e).__name__}: {e}")
             return pd.DataFrame()
 
     def _load_macro(self) -> dict:
@@ -258,6 +268,9 @@ class DataLoader:
             indicators = client.fetch_indicators()
             logger.info(f"マクロ指標: {len(indicators)}項目取得")
             return indicators
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            logger.warning(f"マクロ指標: ネットワークエラー（続行）: {e}")
+            return {}
         except Exception as e:
-            logger.warning(f"マクロ指標取得失敗（続行）: {e}")
+            logger.warning(f"マクロ指標取得失敗（続行）: {type(e).__name__}: {e}")
             return {}

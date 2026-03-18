@@ -250,16 +250,17 @@ def get_wave_signals(df: pd.DataFrame) -> list[str]:
     fib = detect_fibonacci_support_resistance(df)
     if fib:
         close = df["Close"].iloc[-1]
-        if fib.get("nearest_support"):
-            name, price = fib["nearest_support"]
-            pct = (close - price) / close * 100
-            if pct < 2.0:  # サポート付近（2%以内）
-                signals.append(f"フィボナッチサポート付近({name})")
-        if fib.get("nearest_resistance"):
-            name, price = fib["nearest_resistance"]
-            pct = (price - close) / close * 100
-            if pct < 2.0:  # レジスタンス付近（2%以内）
-                signals.append(f"フィボナッチレジスタンス付近({name})")
+        if close > 0:
+            if fib.get("nearest_support"):
+                name, price = fib["nearest_support"]
+                pct = (close - price) / close * 100
+                if pct < 2.0:  # サポート付近（2%以内）
+                    signals.append(f"フィボナッチサポート付近({name})")
+            if fib.get("nearest_resistance"):
+                name, price = fib["nearest_resistance"]
+                pct = (price - close) / close * 100
+                if pct < 2.0:  # レジスタンス付近（2%以内）
+                    signals.append(f"フィボナッチレジスタンス付近({name})")
 
     # エリオット波動
     elliott = detect_elliott_wave_position(df)

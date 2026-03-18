@@ -36,7 +36,8 @@ class DiscordNotifier:
 
         payload = {}
         if content:
-            # Discord は2000文字制限
+            if len(content) > 2000:
+                logger.warning(f"Discord: メッセージを切り詰め ({len(content)} → 2000文字)")
             payload["content"] = content[:2000]
         if embed:
             payload["embeds"] = [embed]
@@ -44,26 +45,41 @@ class DiscordNotifier:
         if not payload:
             return False
 
-        try:
-            resp = requests.post(
-                self._url,
-                json=payload,
-                timeout=10,
-            )
-            if resp.status_code == 429:
-                # Rate limited — wait and retry once
-                retry_after = resp.json().get("retry_after", 2)
-                logger.warning(f"Discord rate limited, {retry_after}秒待機...")
-                time.sleep(retry_after)
-                resp = requests.post(self._url, json=payload, timeout=10)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                resp = requests.post(
+                    self._url,
+                    json=payload,
+                    timeout=10,
+                )
+                if resp.status_code == 429:
+                    # Rate limited — parse retry_after safely
+                    try:
+                        retry_after = resp.json().get("retry_after", 2)
+                    except (ValueError, KeyError):
+                        retry_after = 2
+                    logger.warning(
+                        f"Discord rate limited (試行{attempt + 1}/{max_retries}), "
+                        f"{retry_after}秒待機..."
+                    )
+                    time.sleep(retry_after)
+                    continue
 
-            resp.raise_for_status()
-            time.sleep(self.RATE_LIMIT_DELAY)
-            return True
+                resp.raise_for_status()
+                time.sleep(self.RATE_LIMIT_DELAY)
+                return True
 
-        except requests.RequestException as e:
-            logger.error(f"Discord送信エラー: {e}")
-            return False
+            except requests.exceptions.Timeout:
+                logger.warning(f"Discord: タイムアウト (試行{attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+            except requests.RequestException as e:
+                logger.error(f"Discord送信エラー: {e}")
+                return False
+
+        logger.error("Discord: 最大リトライ回数超過")
+        return False
 
     def send_embed(
         self,
