@@ -1,0 +1,147 @@
+name: Setup Check & Test Notification
+
+on:
+  workflow_dispatch:
+    inputs:
+      send_test_line:
+        description: 'Send test LINE message?'
+        required: false
+        default: true
+        type: boolean
+      send_test_discord:
+        description: 'Send test Discord message?'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  TZ: Asia/Tokyo
+
+jobs:
+  check-secrets:
+    name: Validate Secrets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required secrets
+        run: |
+          errors=0
+          echo "===== Secrets Validation ====="
+
+          if [ -z "$JQUANTS_API_KEY" ]; then
+            echo "::error::JQUANTS_API_KEY is not set"
+            errors=$((errors + 1))
+          else
+            echo "✅ JQUANTS_API_KEY ... OK"
+          fi
+
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "::warning::DISCORD_WEBHOOK_URL is not set (optional)"
+          else
+            echo "✅ DISCORD_WEBHOOK_URL ... OK"
+          fi
+
+          if [ -z "$LINE_CHANNEL_TOKEN" ]; then
+            echo "::warning::LINE_CHANNEL_TOKEN is not set (optional)"
+          else
+            echo "✅ LINE_CHANNEL_TOKEN ... OK"
+          fi
+
+          if [ -z "$LINE_USER_ID" ]; then
+            echo "::warning::LINE_USER_ID is not set (optional)"
+          else
+            echo "✅ LINE_USER_ID ... OK"
+          fi
+
+          if [ -z "$NEWS_API_KEY" ]; then
+            echo "::warning::NEWS_API_KEY is not set (optional)"
+          else
+            echo "✅ NEWS_API_KEY ... OK"
+          fi
+
+          if [ -z "$EDINET_API_KEY" ]; then
+            echo "::warning::EDINET_API_KEY is not set (optional)"
+          else
+            echo "✅ EDINET_API_KEY ... OK"
+          fi
+
+          echo ""
+          if [ $errors -gt 0 ]; then
+            echo "::error::$errors required secret(s) missing"
+            exit 1
+          fi
+          echo "🎉 All required secrets are configured!"
+        env:
+          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+
+  run-tests:
+    name: Run Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest tests/ -v --tb=short
+
+  test-notifications:
+    name: Test Notifications
+    needs: [check-secrets, run-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Send test LINE message
+        if: inputs.send_test_line
+        run: |
+          python -c "
+          import os, sys
+          token = os.environ.get('LINE_CHANNEL_TOKEN', '')
+          uid   = os.environ.get('LINE_USER_ID', '')
+          if not token or not uid:
+              print('⏭️  LINE secrets not set — skipping')
+              sys.exit(0)
+          from src.notifier.line_notifier import LineNotifier
+          ln = LineNotifier(channel_token=token, user_id=uid)
+          ok = ln.send_message('🔔 Swing セットアップ完了！\nLINE 通知のテスト送信です。')
+          sys.exit(0 if ok else 1)
+          "
+        env:
+          LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+
+      - name: Send test Discord message
+        if: inputs.send_test_discord
+        run: |
+          python -c "
+          import os, sys
+          url = os.environ.get('DISCORD_WEBHOOK_URL', '')
+          if not url:
+              print('⏭️  DISCORD_WEBHOOK_URL not set — skipping')
+              sys.exit(0)
+          from src.notifier.discord_notifier import DiscordNotifier
+          dn = DiscordNotifier(webhook_url=url)
+          ok = dn.send_message('🔔 Swing セットアップ完了！\nDiscord 通知のテスト送信です。')
+          sys.exit(0 if ok else 1)
+          "
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
