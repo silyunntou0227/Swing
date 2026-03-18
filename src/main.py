@@ -15,6 +15,7 @@ from src.notify.discord import DiscordNotifier
 from src.notify.line import LINENotifier
 from src.notify.formatter import ResultFormatter, LINEResultFormatter
 from src.config import (
+    DISCORD_WEBHOOK_URL,
     TOP_BUY_CANDIDATES,
     TOP_SELL_CANDIDATES,
     LINE_CHANNEL_TOKEN,
@@ -22,15 +23,21 @@ from src.config import (
 )
 
 
-def _send_formatted(notifier: DiscordNotifier, data: dict | str) -> None:
-    """formatter が返す dict/str を適切に Discord に送信"""
+def _send_formatted(notifier: DiscordNotifier, data: dict | str) -> bool:
+    """formatter が返す dict/str を適切に Discord に送信。
+
+    Returns:
+        全送信が成功した場合 True
+    """
+    results: list[bool] = []
     if isinstance(data, str):
-        notifier.send(content=data)
+        results.append(notifier.send(content=data))
     elif isinstance(data, dict) and "embeds" in data:
         for embed in data["embeds"]:
-            notifier.send(embed=embed)
+            results.append(notifier.send(embed=embed))
     elif isinstance(data, dict):
-        notifier.send(embed=data)
+        results.append(notifier.send(embed=data))
+    return all(results) if results else True
 
 
 def _is_jpx_holiday(dt: datetime.date) -> bool:
@@ -110,25 +117,50 @@ def main() -> int:
         formatter = ResultFormatter()
         notifier = DiscordNotifier()
 
+        if not DISCORD_WEBHOOK_URL:
+            logger.error("DISCORD_WEBHOOK_URL が未設定です — Discord 通知をスキップ")
+
+        sent_ok = 0
+        sent_fail = 0
+
         # 市場サマリー
         summary = formatter.format_market_summary(market_data)
-        _send_formatted(notifier, summary)
+        if _send_formatted(notifier, summary):
+            sent_ok += 1
+        else:
+            sent_fail += 1
 
         # 買い候補
         for i, candidate in enumerate(top_buy, 1):
             message = formatter.format_buy_candidate(candidate, rank=i)
-            _send_formatted(notifier, message)
+            if _send_formatted(notifier, message):
+                sent_ok += 1
+            else:
+                sent_fail += 1
 
         # 売り候補
         for i, candidate in enumerate(top_sell, 1):
             message = formatter.format_sell_candidate(candidate, rank=i)
-            _send_formatted(notifier, message)
+            if _send_formatted(notifier, message):
+                sent_ok += 1
+            else:
+                sent_fail += 1
 
         # スコアリングサマリー（銘柄一覧 + 推論根拠）
         logger.info("Step 6: スコアリングサマリー送信中...")
         summary_embeds = formatter.format_scoring_summary(top_buy, top_sell)
         for embed in summary_embeds:
-            notifier.send(embed=embed)
+            if notifier.send(embed=embed):
+                sent_ok += 1
+            else:
+                sent_fail += 1
+
+        if sent_fail > 0:
+            logger.warning(
+                f"Discord 通知: 成功{sent_ok}件, 失敗{sent_fail}件"
+            )
+        else:
+            logger.info(f"Discord 通知: 全{sent_ok}件送信完了")
 
         # Step 7: LINE 通知送信
         if LINE_CHANNEL_TOKEN and LINE_USER_ID:
@@ -138,7 +170,9 @@ def main() -> int:
             line_text = line_formatter.format_summary(
                 market_data, top_buy, top_sell,
             )
-            if not line_notifier.send(line_text):
+            if line_notifier.send(line_text):
+                logger.info("LINE 通知送信完了")
+            else:
                 logger.warning("LINE 通知の送信に失敗しました")
         else:
             logger.info("Step 7: LINE 認証情報未設定 — LINE 通知をスキップ")
