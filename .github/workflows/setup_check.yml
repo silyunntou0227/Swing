@@ -110,24 +110,22 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Send test LINE message
+      - name: Send test LINE message (broadcast)
         if: inputs.send_test_line
         run: |
           python -c "
           import os, sys
           token = os.environ.get('LINE_CHANNEL_TOKEN', '')
-          uid   = os.environ.get('LINE_USER_ID', '')
-          if not token or not uid:
-              print('⏭️  LINE secrets not set — skipping')
+          if not token:
+              print('⏭️  LINE_CHANNEL_TOKEN not set — skipping')
               sys.exit(0)
           from src.notify.line import LINENotifier
-          ln = LINENotifier(channel_token=token, user_id=uid)
-          ok = ln.send('🔔 Swing セットアップ完了！\nLINE 通知のテスト送信です。')
+          ln = LINENotifier(channel_token=token)
+          ok = ln.send('🔔 Swing セットアップ完了！\nLINE 通知のテスト送信です。\n（友達全員に配信）')
           sys.exit(0 if ok else 1)
           "
         env:
           LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
-          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
 
       - name: Send test Discord message
         if: inputs.send_test_discord
