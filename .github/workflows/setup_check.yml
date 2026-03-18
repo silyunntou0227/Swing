@@ -120,9 +120,9 @@ jobs:
           if not token or not uid:
               print('⏭️  LINE secrets not set — skipping')
               sys.exit(0)
-          from src.notifier.line_notifier import LineNotifier
-          ln = LineNotifier(channel_token=token, user_id=uid)
-          ok = ln.send_message('🔔 Swing セットアップ完了！\nLINE 通知のテスト送信です。')
+          from src.notify.line import LINENotifier
+          ln = LINENotifier(channel_token=token, user_id=uid)
+          ok = ln.send('🔔 Swing セットアップ完了！\nLINE 通知のテスト送信です。')
           sys.exit(0 if ok else 1)
           "
         env:
@@ -138,9 +138,9 @@ jobs:
           if not url:
               print('⏭️  DISCORD_WEBHOOK_URL not set — skipping')
               sys.exit(0)
-          from src.notifier.discord_notifier import DiscordNotifier
+          from src.notify.discord import DiscordNotifier
           dn = DiscordNotifier(webhook_url=url)
-          ok = dn.send_message('🔔 Swing セットアップ完了！\nDiscord 通知のテスト送信です。')
+          ok = dn.send('🔔 Swing セットアップ完了！\nDiscord 通知のテスト送信です。')
           sys.exit(0 if ok else 1)
           "
         env:
