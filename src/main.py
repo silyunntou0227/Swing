@@ -162,18 +162,28 @@ def main() -> int:
         else:
             logger.info(f"Discord 通知: 全{sent_ok}件送信完了")
 
-        # Step 7: LINE 通知送信
+        # Step 7: LINE 通知送信（Flex Message + テキストフォールバック）
         if LINE_CHANNEL_TOKEN and LINE_USER_ID:
             logger.info("Step 7: LINE 通知送信中...")
             line_formatter = LINEResultFormatter()
             line_notifier = LINENotifier()
-            line_text = line_formatter.format_summary(
+
+            # Flex Message（リッチ表示）を優先送信
+            flex_contents = line_formatter.build_flex_summary(
                 market_data, top_buy, top_sell,
             )
-            if line_notifier.send(line_text):
-                logger.info("LINE 通知送信完了")
+            alt_text = line_formatter.format_summary(
+                market_data, top_buy, top_sell,
+            )
+            if line_notifier.send_flex(alt_text, flex_contents):
+                logger.info("LINE Flex Message 送信完了")
             else:
-                logger.warning("LINE 通知の送信に失敗しました")
+                # Flex 失敗時はテキストにフォールバック
+                logger.warning("LINE Flex Message 送信失敗 — テキスト送信にフォールバック")
+                if line_notifier.send(alt_text):
+                    logger.info("LINE テキスト通知送信完了")
+                else:
+                    logger.warning("LINE 通知の送信に失敗しました")
         else:
             logger.info("Step 7: LINE 認証情報未設定 — LINE 通知をスキップ")
 

@@ -297,6 +297,76 @@ class TestLINEResultFormatter:
         assert "6758" in text
 
 
+# ---------- Flex Message フォーマッター ----------
+
+
+class TestLINEFlexMessage:
+    def setup_method(self):
+        self.formatter = LINEResultFormatter()
+        self.market_data = _FakeMarketData()
+
+    def test_flex_summary_returns_carousel(self):
+        buys = [_make_candidate(code="7203")]
+        result = self.formatter.build_flex_summary(self.market_data, buys, [])
+        assert result["type"] == "carousel"
+        assert isinstance(result["contents"], list)
+
+    def test_flex_summary_header_bubble(self):
+        buys = [_make_candidate(code="7203")]
+        sells = [_make_candidate(code="6758", direction="sell")]
+        result = self.formatter.build_flex_summary(self.market_data, buys, sells)
+        header = result["contents"][0]
+        assert header["type"] == "bubble"
+        # ヘッダーに候補数が含まれる
+        body_texts = [c.get("text", "") for c in header["body"]["contents"]
+                      if c.get("type") == "text"]
+        assert any("スキャン" in t for t in body_texts)
+
+    def test_flex_summary_bubble_count(self):
+        """1 header + 3 buy + 2 sell = 6 bubbles"""
+        buys = [_make_candidate(code=f"{i}") for i in range(3)]
+        sells = [_make_candidate(code=f"{i}", direction="sell") for i in range(2)]
+        result = self.formatter.build_flex_summary(self.market_data, buys, sells)
+        assert len(result["contents"]) == 6
+
+    def test_flex_summary_max_12_bubbles(self):
+        """carousel 上限12件"""
+        buys = [_make_candidate(code=f"{i}") for i in range(15)]
+        result = self.formatter.build_flex_summary(self.market_data, buys, [])
+        assert len(result["contents"]) <= 12
+
+    def test_flex_candidate_bubble_structure(self):
+        c = _make_candidate(
+            code="7203", name="トヨタ", total_score=85,
+            stop_loss=2400, take_profit=2800, risk_reward_ratio=2.0,
+        )
+        bubble = self.formatter.build_flex_candidate(c, rank=1, direction="buy")
+        assert bubble["type"] == "bubble"
+        assert bubble["size"] == "kilo"
+        assert "body" in bubble
+
+    def test_flex_candidate_no_risk_when_zero(self):
+        """stop_loss=0 のときリスク管理行が出ない"""
+        c = _make_candidate(stop_loss=0, take_profit=0)
+        bubble = self.formatter.build_flex_candidate(c, rank=1, direction="buy")
+        body_str = str(bubble)
+        assert "損切り" not in body_str
+
+    def test_flex_candidate_shows_fundamentals(self):
+        c = _make_candidate(per=12.0, pbr=0.9, roe=15.0)
+        bubble = self.formatter.build_flex_candidate(c, rank=1, direction="buy")
+        body_str = str(bubble)
+        assert "PER 12.0" in body_str
+        assert "PBR 0.90" in body_str
+        assert "ROE 15.0%" in body_str
+
+    def test_flex_sell_candidate_color(self):
+        c = _make_candidate(direction="sell")
+        bubble = self.formatter.build_flex_candidate(c, rank=1, direction="sell")
+        body_str = str(bubble)
+        assert LINEResultFormatter.COLOR_SELL in body_str
+
+
 # ---------- _is_jpx_holiday ----------
 
 

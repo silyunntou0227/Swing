@@ -445,12 +445,25 @@ def _chunked(lst: list, size: int) -> list[list]:
 
 
 # ============================================================
-# LINE 用プレーンテキストフォーマッター
+# LINE 用フォーマッター（プレーンテキスト + Flex Message）
 # ============================================================
 
 
 class LINEResultFormatter:
-    """スキャン結果を LINE 向けプレーンテキストにフォーマット"""
+    """スキャン結果を LINE 向けにフォーマット
+
+    - format_summary: プレーンテキスト版（従来互換）
+    - build_flex_summary: Flex Message 版（リッチ表示）
+    - build_flex_candidate: 個別銘柄の Flex Message bubble
+    """
+
+    # Flex Message カラー
+    COLOR_BUY = "#00CC66"
+    COLOR_SELL = "#FF4444"
+    COLOR_HEADER = "#1A1A2E"
+    COLOR_SCORE_HIGH = "#00CC66"
+    COLOR_SCORE_MID = "#FFAA00"
+    COLOR_SCORE_LOW = "#FF4444"
 
     def format_summary(
         self,
@@ -502,3 +515,297 @@ class LINEResultFormatter:
             lines.append("本日は条件を満たす候補銘柄がありませんでした。")
 
         return "\n".join(lines)[:5000]
+
+    # ------------------------------------------------------------------
+    # Flex Message 生成
+    # ------------------------------------------------------------------
+
+    def build_flex_summary(
+        self,
+        market_data: MarketData,
+        buy_candidates: list[ScoredCandidate],
+        sell_candidates: list[ScoredCandidate],
+    ) -> dict:
+        """スキャン結果全体を Flex Message carousel として生成
+
+        Returns:
+            Flex Message の contents（carousel 型）
+        """
+        bubbles: list[dict] = []
+
+        # ヘッダー bubble
+        bubbles.append(self._build_header_bubble(market_data, buy_candidates, sell_candidates))
+
+        # 買い候補 bubbles（上位5件）
+        for i, c in enumerate(buy_candidates[:5], 1):
+            bubbles.append(self._build_candidate_bubble(c, rank=i, direction="buy"))
+
+        # 売り候補 bubbles（上位3件）
+        for i, c in enumerate(sell_candidates[:3], 1):
+            bubbles.append(self._build_candidate_bubble(c, rank=i, direction="sell"))
+
+        # carousel は最大12 bubbles
+        return {
+            "type": "carousel",
+            "contents": bubbles[:12],
+        }
+
+    def build_flex_candidate(
+        self,
+        candidate: ScoredCandidate,
+        rank: int,
+        direction: str = "buy",
+    ) -> dict:
+        """個別銘柄の Flex Message bubble を生成
+
+        Returns:
+            Flex Message の contents（bubble 型）
+        """
+        return self._build_candidate_bubble(candidate, rank, direction)
+
+    # ------------------------------------------------------------------
+    # Flex bubble builders
+    # ------------------------------------------------------------------
+
+    def _build_header_bubble(
+        self,
+        market_data: MarketData,
+        buy_candidates: list[ScoredCandidate],
+        sell_candidates: list[ScoredCandidate],
+    ) -> dict:
+        """サマリーヘッダーの bubble"""
+        body_contents: list[dict] = [
+            {
+                "type": "text",
+                "text": "日本株スイングスキャン",
+                "weight": "bold",
+                "size": "lg",
+                "color": self.COLOR_HEADER,
+            },
+            {
+                "type": "text",
+                "text": f"スキャン日: {market_data.scan_date}",
+                "size": "sm",
+                "color": "#888888",
+                "margin": "md",
+            },
+            {"type": "separator", "margin": "lg"},
+            {
+                "type": "box",
+                "layout": "horizontal",
+                "margin": "lg",
+                "contents": [
+                    {
+                        "type": "box",
+                        "layout": "vertical",
+                        "flex": 1,
+                        "contents": [
+                            {
+                                "type": "text",
+                                "text": "買い候補",
+                                "size": "sm",
+                                "color": "#888888",
+                                "align": "center",
+                            },
+                            {
+                                "type": "text",
+                                "text": str(len(buy_candidates)),
+                                "size": "xxl",
+                                "weight": "bold",
+                                "color": self.COLOR_BUY,
+                                "align": "center",
+                            },
+                        ],
+                    },
+                    {"type": "separator"},
+                    {
+                        "type": "box",
+                        "layout": "vertical",
+                        "flex": 1,
+                        "contents": [
+                            {
+                                "type": "text",
+                                "text": "売り候補",
+                                "size": "sm",
+                                "color": "#888888",
+                                "align": "center",
+                            },
+                            {
+                                "type": "text",
+                                "text": str(len(sell_candidates)),
+                                "size": "xxl",
+                                "weight": "bold",
+                                "color": self.COLOR_SELL,
+                                "align": "center",
+                            },
+                        ],
+                    },
+                ],
+            },
+        ]
+
+        return {
+            "type": "bubble",
+            "size": "kilo",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": body_contents,
+                "paddingAll": "lg",
+            },
+        }
+
+    def _build_candidate_bubble(
+        self,
+        c: ScoredCandidate,
+        rank: int,
+        direction: str,
+    ) -> dict:
+        """個別銘柄カードの bubble"""
+        is_buy = direction == "buy"
+        accent = self.COLOR_BUY if is_buy else self.COLOR_SELL
+        label = "買い" if is_buy else "売り"
+
+        # スコアに応じた色
+        if c.total_score >= 70:
+            score_color = self.COLOR_SCORE_HIGH
+        elif c.total_score >= 50:
+            score_color = self.COLOR_SCORE_MID
+        else:
+            score_color = self.COLOR_SCORE_LOW
+
+        body_contents: list[dict] = [
+            # ヘッダー行: ランク + 銘柄名
+            {
+                "type": "box",
+                "layout": "horizontal",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": f"#{rank} {label}",
+                        "size": "xs",
+                        "color": "#FFFFFF",
+                        "weight": "bold",
+                    },
+                ],
+                "backgroundColor": accent,
+                "paddingAll": "xs",
+                "cornerRadius": "sm",
+            },
+            {
+                "type": "text",
+                "text": f"{c.name}",
+                "weight": "bold",
+                "size": "md",
+                "margin": "md",
+            },
+            {
+                "type": "text",
+                "text": c.code,
+                "size": "xs",
+                "color": "#888888",
+            },
+            # スコア + 現在値
+            {
+                "type": "box",
+                "layout": "horizontal",
+                "margin": "lg",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": f"スコア {c.total_score:.0f}",
+                        "weight": "bold",
+                        "size": "lg",
+                        "color": score_color,
+                        "flex": 1,
+                    },
+                    {
+                        "type": "text",
+                        "text": f"¥{c.close:,.0f}",
+                        "size": "lg",
+                        "align": "end",
+                        "flex": 1,
+                    },
+                ],
+            },
+            {"type": "separator", "margin": "lg"},
+        ]
+
+        # シグナル
+        if c.signals:
+            signals_text = ", ".join(c.signals[:3])
+            body_contents.append({
+                "type": "text",
+                "text": signals_text,
+                "size": "xs",
+                "color": "#666666",
+                "margin": "md",
+                "wrap": True,
+            })
+
+        # リスク管理（買い候補のみ）
+        if c.stop_loss > 0:
+            sl_pct = (c.stop_loss - c.close) / c.close * 100
+            tp_pct = (c.take_profit - c.close) / c.close * 100
+            body_contents.append({
+                "type": "box",
+                "layout": "vertical",
+                "margin": "md",
+                "contents": [
+                    self._kv_row("損切り", f"¥{c.stop_loss:,.0f} ({sl_pct:+.1f}%)"),
+                    self._kv_row("利確", f"¥{c.take_profit:,.0f} ({tp_pct:+.1f}%)"),
+                    self._kv_row("R:R", f"1:{c.risk_reward_ratio:.1f}"),
+                ],
+            })
+
+        # ファンダメンタル
+        fund_parts = []
+        if c.per is not None:
+            fund_parts.append(f"PER {c.per:.1f}")
+        if c.pbr is not None:
+            fund_parts.append(f"PBR {c.pbr:.2f}")
+        if c.roe is not None:
+            fund_parts.append(f"ROE {c.roe:.1f}%")
+        if fund_parts:
+            body_contents.append({
+                "type": "text",
+                "text": " | ".join(fund_parts),
+                "size": "xxs",
+                "color": "#999999",
+                "margin": "md",
+            })
+
+        return {
+            "type": "bubble",
+            "size": "kilo",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": body_contents,
+                "paddingAll": "lg",
+            },
+        }
+
+    @staticmethod
+    def _kv_row(key: str, value: str) -> dict:
+        """key-value 行の Flex box"""
+        return {
+            "type": "box",
+            "layout": "horizontal",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": key,
+                    "size": "xxs",
+                    "color": "#888888",
+                    "flex": 2,
+                },
+                {
+                    "type": "text",
+                    "text": value,
+                    "size": "xxs",
+                    "align": "end",
+                    "flex": 3,
+                },
+            ],
+        }
