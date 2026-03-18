@@ -91,6 +91,12 @@ def main() -> int:
             message = formatter.format_sell_candidate(candidate, rank=i)
             _send_formatted(notifier, message)
 
+        # スコアリングサマリー（銘柄一覧 + 推論根拠）
+        logger.info("Step 6: スコアリングサマリー送信中...")
+        summary_embeds = formatter.format_scoring_summary(top_buy, top_sell)
+        for embed in summary_embeds:
+            notifier.send(embed=embed)
+
         elapsed = time.time() - start_time
         logger.info(f"=== スキャン完了（{elapsed:.1f}秒） ===")
         return 0

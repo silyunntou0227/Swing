@@ -291,3 +291,154 @@ class ResultFormatter:
                 "fields": fields,
             }]
         }
+
+    # ------------------------------------------------------------------
+    # スコアリングサマリー（全候補一覧 + 推論根拠）
+    # ------------------------------------------------------------------
+
+    def format_scoring_summary(
+        self,
+        buy_candidates: list[ScoredCandidate],
+        sell_candidates: list[ScoredCandidate],
+    ) -> list[dict]:
+        """全候補の一覧・スコア・推論サマリーを Embed リストで返す。
+
+        Discord Embed は 25 field / 6000文字制限があるため、
+        一覧テーブルと個別推論を分割して返す。
+        """
+        embeds: list[dict] = []
+
+        # --- 買い候補一覧テーブル ---
+        if buy_candidates:
+            embeds.append(self._build_ranking_table(
+                buy_candidates, direction="buy",
+            ))
+            # 個別推論サマリー（5銘柄ずつ1 Embed）
+            for chunk in _chunked(buy_candidates, 5):
+                embeds.append(self._build_reasoning_embed(
+                    chunk, direction="buy",
+                ))
+
+        # --- 売り候補一覧テーブル ---
+        if sell_candidates:
+            embeds.append(self._build_ranking_table(
+                sell_candidates, direction="sell",
+            ))
+            for chunk in _chunked(sell_candidates, 5):
+                embeds.append(self._build_reasoning_embed(
+                    chunk, direction="sell",
+                ))
+
+        return embeds
+
+    # ---------- 内部ヘルパー ----------
+
+    def _build_ranking_table(
+        self,
+        candidates: list[ScoredCandidate],
+        direction: str,
+    ) -> dict:
+        """スコア降順のランキングテーブル Embed を生成"""
+        emoji = "📈" if direction == "buy" else "📉"
+        label = "買い候補" if direction == "buy" else "売り候補"
+        color = self.COLOR_BUY if direction == "buy" else self.COLOR_SELL
+
+        lines = [f"```\n{'#':>2} {'銘柄':　<8} {'コード':>6} {'スコア':>5} {'現在値':>9}"]
+        lines.append("-" * 44)
+        for i, c in enumerate(candidates, 1):
+            # 銘柄名は長い場合に切り詰め
+            name = c.name[:8] if len(c.name) > 8 else c.name
+            lines.append(
+                f"{i:>2} {name:　<8} {c.code:>6} "
+                f"{c.total_score:>5.0f} ¥{c.close:>9,.0f}"
+            )
+        lines.append("```")
+
+        return {
+            "title": f"{emoji} {label}ランキング（{len(candidates)}件）",
+            "description": "\n".join(lines),
+            "color": color,
+        }
+
+    def _build_reasoning_embed(
+        self,
+        candidates: list[ScoredCandidate],
+        direction: str,
+    ) -> dict:
+        """各銘柄の推論根拠を field で並べた Embed"""
+        color = self.COLOR_BUY if direction == "buy" else self.COLOR_SELL
+        fields: list[dict] = []
+
+        for c in candidates:
+            reasoning = _build_reasoning_text(c)
+            fields.append({
+                "name": f"{c.name} ({c.code})  —  {c.total_score:.0f}点",
+                "value": reasoning,
+                "inline": False,
+            })
+
+        label = "買い" if direction == "buy" else "売り"
+        return {
+            "title": f"🔍 {label}候補 推論サマリー",
+            "color": color,
+            "fields": fields,
+        }
+
+
+def _build_reasoning_text(c: ScoredCandidate) -> str:
+    """1銘柄の推論根拠を簡潔なテキストにまとめる"""
+    parts: list[str] = []
+
+    # スコア内訳（上位寄与因子を強調）
+    factors = [
+        ("トレンド", c.trend_score, 0.20),
+        ("MACD", c.macd_score, 0.14),
+        ("一目均衡", c.ichimoku_score, 0.12),
+        ("出来高", c.volume_score, 0.11),
+        ("RSI", c.rsi_score, 0.10),
+        ("ファンダ", c.fundamental_score, 0.10),
+        ("パターン", c.pattern_score, 0.05),
+        ("R:R", c.risk_reward_score, 0.05),
+        ("ニュース", c.news_score, 0.05),
+        ("セクター", c.sector_score, 0.05),
+        ("需給", c.margin_score, 0.03),
+    ]
+    # 加重スコア降順で上位3因子
+    weighted = sorted(factors, key=lambda f: f[1] * f[2], reverse=True)
+    top3 = [f"**{name}** {score:.0f}" for name, score, _ in weighted[:3]]
+    parts.append(f"主要因子: {' / '.join(top3)}")
+
+    # シグナル
+    if c.signals:
+        parts.append(f"シグナル: {', '.join(c.signals[:4])}")
+
+    # ファンダメンタル要約
+    fund = []
+    if c.per is not None:
+        fund.append(f"PER {c.per:.1f}")
+    if c.pbr is not None:
+        fund.append(f"PBR {c.pbr:.2f}")
+    if c.roe is not None:
+        fund.append(f"ROE {c.roe:.1f}%")
+    if fund:
+        parts.append(" | ".join(fund))
+
+    # ニュース・セクター
+    if c.news_sentiment:
+        parts.append(f"ニュース: {c.news_sentiment}")
+    if c.sector_name:
+        sector_info = c.sector_name
+        if c.sector_explanation:
+            sector_info += f"（{c.sector_explanation}）"
+        parts.append(f"セクター: {sector_info}")
+
+    # マクロ調整
+    if c.macro_adjustment != 0:
+        parts.append(f"マクロ調整: {c.macro_adjustment:+.0f}点")
+
+    return "\n".join(parts)
+
+
+def _chunked(lst: list, size: int) -> list[list]:
+    """リストを size 個ずつのチャンクに分割"""
+    return [lst[i:i + size] for i in range(0, len(lst), size)]
