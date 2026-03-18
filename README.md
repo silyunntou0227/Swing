@@ -1,7 +1,7 @@
 # Swing - 日本株スイングトレード自動スクリーニングシステム
 
 東証上場 約4000銘柄を毎日自動スキャンし、スイングトレード（2日〜2週間）の
-買い/売り候補をスコアリングして Discord に通知するシステム。
+買い/売り候補をスコアリングして **Discord / LINE** に通知するシステム。
 
 GitHub Actions で毎日自動実行。**ランニングコスト0円**。
 
@@ -11,10 +11,10 @@ GitHub Actions で毎日自動実行。**ランニングコスト0円**。
 
 ```
 JPX銘柄一覧 ─┐
-yfinance     ─┤
-J-Quants V2  ─┤──→ 5層スクリーニング ──→ スコアリング ──→ Discord通知
-TDnet開示    ─┤      (4000→10銘柄)     (0-100点)      📈買い候補Top10
-EDINET       ─┤                                        📉売り候補Top5
+yfinance     ─┤                                              ┌─ Discord (18:00)
+J-Quants V2  ─┤──→ 5層スクリーニング ──→ スコアリング ──→─┤  📈買い候補Top10
+TDnet開示    ─┤      (4000→10銘柄)     (0-100点)          │  📉売り候補Top5
+EDINET       ─┤                                              └─ LINE (07:30)
 ニュースAPI  ─┤
 日経平均     ─┘
 ```
@@ -98,8 +98,14 @@ LINE_USER_ID=
 ### 4. 実行
 
 ```bash
-# ローカル実行
+# ローカル実行（Discord + LINE 両方に通知）
 python -m src.main
+
+# Discord のみ通知
+python -m src.main --channel discord
+
+# LINE のみ通知
+python -m src.main --channel line
 
 # テスト実行
 python -m pytest tests/ -v
@@ -109,13 +115,15 @@ python -m pytest tests/ -v
 
 ## GitHub Actions（自動実行）
 
-### 毎日自動スキャン
+### ワークフロー一覧
 
-`daily_scan.yml` — 毎日 JST 18:00（東証引け後）に自動実行
-
-### 手動スキャン
-
-`manual_scan.yml` — GitHub Actions 画面から手動実行可能
+| ワークフロー | ファイル | スケジュール | 通知先 |
+|-------------|---------|-------------|--------|
+| 毎日自動スキャン | `daily_scan.yml` | JST 18:00（東証引け後） | Discord |
+| 朝のLINE通知 | `morning_line.yml` | JST 07:30（朝の確認用） | LINE |
+| 手動スキャン | `manual_scan.yml` | 手動実行 | Discord + LINE |
+| CI テスト | `ci.yml` | PR / push 時 | — |
+| セットアップ確認 | `setup_check.yml` | 手動実行 | — |
 
 ### GitHub Secrets に設定が必要な環境変数
 
@@ -168,8 +176,8 @@ src/
 │   └── risk.py             # リスク管理・ポジションサイジング
 └── notify/                 # 通知
     ├── discord.py          # Discord Webhook
-    ├── formatter.py        # 結果フォーマット（Embed）
-    └── line.py             # LINE通知
+    ├── formatter.py        # 結果フォーマット（Discord Embed / LINE Flex Message）
+    └── line.py             # LINE Messaging API 通知（Flex Message・リトライ）
 ```
 
 ---
@@ -206,7 +214,9 @@ TOPIX-17セクター分類と景気サイクル理論に基づき、マクロ環
 
 ---
 
-## Discord 通知サンプル
+## 通知サンプル
+
+### Discord（Embed形式）
 
 ```
 📈 買い候補 #1: トヨタ自動車 (7203)
@@ -219,6 +229,12 @@ TOPIX-17セクター分類と景気サイクル理論に基づき、マクロ環
 リスク管理: 損切り ¥2,750 (-3.5%) | 利確 ¥3,050 (+7.0%)
            推奨 300株 (¥855,000) | R:R 1:2.0 | 破産確率 0.8%
 ```
+
+### LINE（Flex Message形式）
+
+LINE Messaging API の Flex Message を使用し、同等の情報をカード形式で送信。
+- 毎朝 JST 07:30 に前日のスキャン結果を通知
+- `--channel line` で LINE のみに通知可能
 
 ---
 
@@ -276,6 +292,8 @@ python -m pytest tests/ -v
 | `test_scoring.py` | 9 | ウェイト検証、バルサラ破産確率、フィボナッチ、市場カレンダー |
 | `test_screening.py` | 5 | ファンダメンタル、流動性、ニュースフィルタ |
 | `test_sector.py` | 19 | TOPIX-17分類、景気局面判定、セクタースコア計算 |
+| `test_formatter.py` | 4 | Discord/LINE フォーマッター、Flex Message 生成 |
+| `test_line.py` | 5 | LINE 通知、リトライ、エラーハンドリング |
 
 ---
 
