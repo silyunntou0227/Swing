@@ -1,13 +1,19 @@
 """通知フォーマッターのユニットテスト"""
 
+import datetime
+from dataclasses import dataclass, field
+from unittest.mock import patch
+
 import pytest
 
 from src.notify.formatter import (
+    LINEResultFormatter,
     ResultFormatter,
     ScoredCandidate,
     _build_reasoning_text,
     _chunked,
 )
+from src.main import _is_jpx_holiday
 
 
 # ---------- ヘルパー ----------
@@ -243,3 +249,71 @@ class TestBuildRankingTable:
         candidates = [_make_candidate() for _ in range(3)]
         embed = self.formatter._build_ranking_table(candidates, "sell")
         assert "3件" in embed["title"]
+
+
+# ---------- LINEResultFormatter ----------
+
+
+@dataclass
+class _FakeMarketData:
+    scan_date: str = "2026-03-18"
+    stocks: list = field(default_factory=list)
+    has_prices: bool = True
+    has_financials: bool = True
+    has_news: bool = False
+    has_disclosures: bool = False
+    prices: object = None
+    disclosures: list = field(default_factory=list)
+    news: list = field(default_factory=list)
+    macro_indicators: dict = field(default_factory=dict)
+
+
+class TestLINEResultFormatter:
+    def setup_method(self):
+        self.formatter = LINEResultFormatter()
+        self.market_data = _FakeMarketData()
+
+    def test_summary_with_candidates(self):
+        buys = [_make_candidate(code="7203", total_score=82, stop_loss=2400, take_profit=2700, risk_reward_ratio=2.0)]
+        text = self.formatter.format_summary(self.market_data, buys, [])
+        assert "買い候補" in text
+        assert "7203" in text
+        assert "スコア82" in text
+        assert "SL" in text
+
+    def test_summary_no_candidates(self):
+        text = self.formatter.format_summary(self.market_data, [], [])
+        assert "条件を満たす候補銘柄がありませんでした" in text
+
+    def test_summary_within_5000_chars(self):
+        buys = [_make_candidate(code=f"{i:04d}", signals=[f"sig{j}" for j in range(10)]) for i in range(50)]
+        text = self.formatter.format_summary(self.market_data, buys, [])
+        assert len(text) <= 5000
+
+    def test_sell_candidates_included(self):
+        sells = [_make_candidate(code="6758", direction="sell")]
+        text = self.formatter.format_summary(self.market_data, [], sells)
+        assert "売り候補" in text
+        assert "6758" in text
+
+
+# ---------- _is_jpx_holiday ----------
+
+
+class TestIsJpxHoliday:
+    def test_saturday_is_holiday(self):
+        assert _is_jpx_holiday(datetime.date(2026, 3, 14)) is True  # Saturday
+
+    def test_sunday_is_holiday(self):
+        assert _is_jpx_holiday(datetime.date(2026, 3, 15)) is True  # Sunday
+
+    def test_weekday_is_not_holiday(self):
+        # 月曜で祝日でなければ営業日
+        assert _is_jpx_holiday(datetime.date(2026, 3, 16)) is False  # Monday
+
+    def test_national_holiday(self):
+        # 春分の日 2026-03-20 (金)
+        assert _is_jpx_holiday(datetime.date(2026, 3, 20)) is True
+
+    def test_new_year(self):
+        assert _is_jpx_holiday(datetime.date(2026, 1, 1)) is True

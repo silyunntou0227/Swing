@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import sys
 import time
 
@@ -11,8 +12,14 @@ from src.screening.pipeline import ScreeningPipeline
 from src.scoring.scorer import MultiFactorScorer
 from src.scoring.risk import RiskCalculator
 from src.notify.discord import DiscordNotifier
-from src.notify.formatter import ResultFormatter
-from src.config import TOP_BUY_CANDIDATES, TOP_SELL_CANDIDATES
+from src.notify.line import LINENotifier
+from src.notify.formatter import ResultFormatter, LINEResultFormatter
+from src.config import (
+    TOP_BUY_CANDIDATES,
+    TOP_SELL_CANDIDATES,
+    LINE_CHANNEL_TOKEN,
+    LINE_USER_ID,
+)
 
 
 def _send_formatted(notifier: DiscordNotifier, data: dict | str) -> None:
@@ -26,9 +33,35 @@ def _send_formatted(notifier: DiscordNotifier, data: dict | str) -> None:
         notifier.send(embed=data)
 
 
+def _is_jpx_holiday(dt: datetime.date) -> bool:
+    """東証の休場日（土日 + 日本の祝日）かどうかを判定する。
+
+    jpholiday パッケージが利用可能な場合はそれを使い、
+    利用不可ならば土日のみチェックする。
+    """
+    # 土日チェック
+    if dt.weekday() >= 5:
+        return True
+    # 祝日チェック
+    try:
+        import jpholiday  # type: ignore[import-untyped]
+
+        if jpholiday.is_holiday(dt):
+            return True
+    except ImportError:
+        logger.debug("jpholiday 未インストール — 祝日チェックをスキップ")
+    return False
+
+
 def main() -> int:
     start_time = time.time()
     logger.info("=== 日本株スイングトレードスキャン開始 ===")
+
+    # 東証休場日チェック — 休場日は候補が出ないためスキップ
+    today = datetime.date.today()
+    if _is_jpx_holiday(today):
+        logger.info(f"{today} は東証休場日のためスキャンをスキップします")
+        return 0
 
     try:
         # Step 1: データ取得
@@ -72,8 +105,8 @@ def main() -> int:
         for candidate in top_buy + top_sell:
             risk_calc.calculate(candidate, market_data)
 
-        # Step 5: 通知送信
-        logger.info("Step 5: 通知送信中...")
+        # Step 5: Discord 通知送信
+        logger.info("Step 5: Discord 通知送信中...")
         formatter = ResultFormatter()
         notifier = DiscordNotifier()
 
@@ -97,6 +130,19 @@ def main() -> int:
         for embed in summary_embeds:
             notifier.send(embed=embed)
 
+        # Step 7: LINE 通知送信
+        if LINE_CHANNEL_TOKEN and LINE_USER_ID:
+            logger.info("Step 7: LINE 通知送信中...")
+            line_formatter = LINEResultFormatter()
+            line_notifier = LINENotifier()
+            line_text = line_formatter.format_summary(
+                market_data, top_buy, top_sell,
+            )
+            if not line_notifier.send(line_text):
+                logger.warning("LINE 通知の送信に失敗しました")
+        else:
+            logger.info("Step 7: LINE 認証情報未設定 — LINE 通知をスキップ")
+
         elapsed = time.time() - start_time
         logger.info(f"=== スキャン完了（{elapsed:.1f}秒） ===")
         return 0
@@ -110,6 +156,14 @@ def main() -> int:
             notifier.send_error(str(e))
         except Exception:
             logger.error("エラー通知の送信にも失敗しました")
+
+        # LINE にもエラー通知を試行
+        try:
+            if LINE_CHANNEL_TOKEN and LINE_USER_ID:
+                line_notifier = LINENotifier()
+                line_notifier.send(f"【スキャンエラー】\n{str(e)[:4000]}")
+        except Exception:
+            logger.error("LINE エラー通知の送信にも失敗しました")
 
         return 1
 

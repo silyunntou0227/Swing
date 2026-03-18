@@ -442,3 +442,63 @@ def _build_reasoning_text(c: ScoredCandidate) -> str:
 def _chunked(lst: list, size: int) -> list[list]:
     """リストを size 個ずつのチャンクに分割"""
     return [lst[i:i + size] for i in range(0, len(lst), size)]
+
+
+# ============================================================
+# LINE 用プレーンテキストフォーマッター
+# ============================================================
+
+
+class LINEResultFormatter:
+    """スキャン結果を LINE 向けプレーンテキストにフォーマット"""
+
+    def format_summary(
+        self,
+        market_data: MarketData,
+        buy_candidates: list[ScoredCandidate],
+        sell_candidates: list[ScoredCandidate],
+    ) -> str:
+        """LINE 用のサマリーテキストを生成（5000文字以内）"""
+        lines: list[str] = []
+
+        # ヘッダ
+        lines.append("【日本株スイングスキャン結果】")
+        lines.append(f"日付: {market_data.scan_date}")
+        lines.append("")
+
+        # 買い候補
+        if buy_candidates:
+            lines.append(f"▼ 買い候補 TOP{len(buy_candidates)}")
+            for i, c in enumerate(buy_candidates, 1):
+                sl_pct = (c.stop_loss - c.close) / c.close * 100 if c.stop_loss else 0
+                tp_pct = (c.take_profit - c.close) / c.close * 100 if c.take_profit else 0
+                lines.append(
+                    f"{i}. {c.name}({c.code}) "
+                    f"スコア{c.total_score:.0f} ¥{c.close:,.0f}"
+                )
+                if c.signals:
+                    lines.append(f"   シグナル: {', '.join(c.signals[:3])}")
+                if c.stop_loss > 0:
+                    lines.append(
+                        f"   SL ¥{c.stop_loss:,.0f}({sl_pct:+.1f}%) "
+                        f"TP ¥{c.take_profit:,.0f}({tp_pct:+.1f}%) "
+                        f"R:R 1:{c.risk_reward_ratio:.1f}"
+                    )
+            lines.append("")
+
+        # 売り候補
+        if sell_candidates:
+            lines.append(f"▼ 売り候補 TOP{len(sell_candidates)}")
+            for i, c in enumerate(sell_candidates, 1):
+                lines.append(
+                    f"{i}. {c.name}({c.code}) "
+                    f"スコア{c.total_score:.0f} ¥{c.close:,.0f}"
+                )
+                if c.signals:
+                    lines.append(f"   シグナル: {', '.join(c.signals[:3])}")
+            lines.append("")
+
+        if not buy_candidates and not sell_candidates:
+            lines.append("本日は条件を満たす候補銘柄がありませんでした。")
+
+        return "\n".join(lines)[:5000]
