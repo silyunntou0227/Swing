@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import datetime
 import sys
 import time
@@ -60,7 +61,7 @@ def _is_jpx_holiday(dt: datetime.date) -> bool:
     return False
 
 
-def main() -> int:
+def main(channel: str = "all") -> int:
     start_time = time.time()
     logger.info("=== 日本株スイングトレードスキャン開始 ===")
 
@@ -113,79 +114,85 @@ def main() -> int:
             risk_calc.calculate(candidate, market_data)
 
         # Step 5: Discord 通知送信
-        logger.info("Step 5: Discord 通知送信中...")
-        formatter = ResultFormatter()
-        notifier = DiscordNotifier()
+        if channel in ("discord", "all"):
+            logger.info("Step 5: Discord 通知送信中...")
+            formatter = ResultFormatter()
+            notifier = DiscordNotifier()
 
-        if not DISCORD_WEBHOOK_URL:
-            logger.error("DISCORD_WEBHOOK_URL が未設定です — Discord 通知をスキップ")
+            if not DISCORD_WEBHOOK_URL:
+                logger.error("DISCORD_WEBHOOK_URL が未設定です — Discord 通知をスキップ")
 
-        sent_ok = 0
-        sent_fail = 0
+            sent_ok = 0
+            sent_fail = 0
 
-        # 市場サマリー
-        summary = formatter.format_market_summary(market_data)
-        if _send_formatted(notifier, summary):
-            sent_ok += 1
+            # 市場サマリー
+            summary = formatter.format_market_summary(market_data)
+            if _send_formatted(notifier, summary):
+                sent_ok += 1
+            else:
+                sent_fail += 1
+
+            # 買い候補
+            for i, candidate in enumerate(top_buy, 1):
+                message = formatter.format_buy_candidate(candidate, rank=i)
+                if _send_formatted(notifier, message):
+                    sent_ok += 1
+                else:
+                    sent_fail += 1
+
+            # 売り候補
+            for i, candidate in enumerate(top_sell, 1):
+                message = formatter.format_sell_candidate(candidate, rank=i)
+                if _send_formatted(notifier, message):
+                    sent_ok += 1
+                else:
+                    sent_fail += 1
+
+            # スコアリングサマリー（銘柄一覧 + 推論根拠）
+            logger.info("Step 6: スコアリングサマリー送信中...")
+            summary_embeds = formatter.format_scoring_summary(top_buy, top_sell)
+            for embed in summary_embeds:
+                if notifier.send(embed=embed):
+                    sent_ok += 1
+                else:
+                    sent_fail += 1
+
+            if sent_fail > 0:
+                logger.warning(
+                    f"Discord 通知: 成功{sent_ok}件, 失敗{sent_fail}件"
+                )
+            else:
+                logger.info(f"Discord 通知: 全{sent_ok}件送信完了")
         else:
-            sent_fail += 1
-
-        # 買い候補
-        for i, candidate in enumerate(top_buy, 1):
-            message = formatter.format_buy_candidate(candidate, rank=i)
-            if _send_formatted(notifier, message):
-                sent_ok += 1
-            else:
-                sent_fail += 1
-
-        # 売り候補
-        for i, candidate in enumerate(top_sell, 1):
-            message = formatter.format_sell_candidate(candidate, rank=i)
-            if _send_formatted(notifier, message):
-                sent_ok += 1
-            else:
-                sent_fail += 1
-
-        # スコアリングサマリー（銘柄一覧 + 推論根拠）
-        logger.info("Step 6: スコアリングサマリー送信中...")
-        summary_embeds = formatter.format_scoring_summary(top_buy, top_sell)
-        for embed in summary_embeds:
-            if notifier.send(embed=embed):
-                sent_ok += 1
-            else:
-                sent_fail += 1
-
-        if sent_fail > 0:
-            logger.warning(
-                f"Discord 通知: 成功{sent_ok}件, 失敗{sent_fail}件"
-            )
-        else:
-            logger.info(f"Discord 通知: 全{sent_ok}件送信完了")
+            logger.info("Step 5: Discord 通知をスキップ (channel=%s)", channel)
 
         # Step 7: LINE 通知送信（Flex Message + テキストフォールバック）
-        if LINE_CHANNEL_TOKEN and LINE_USER_ID:
-            logger.info("Step 7: LINE 通知送信中...")
-            line_formatter = LINEResultFormatter()
-            line_notifier = LINENotifier()
+        if channel in ("line", "all"):
+            if LINE_CHANNEL_TOKEN and LINE_USER_ID:
+                logger.info("Step 7: LINE 通知送信中...")
+                line_formatter = LINEResultFormatter()
+                line_notifier = LINENotifier()
 
-            # Flex Message（リッチ表示）を優先送信
-            flex_contents = line_formatter.build_flex_summary(
-                market_data, top_buy, top_sell,
-            )
-            alt_text = line_formatter.format_summary(
-                market_data, top_buy, top_sell,
-            )
-            if line_notifier.send_flex(alt_text, flex_contents):
-                logger.info("LINE Flex Message 送信完了")
-            else:
-                # Flex 失敗時はテキストにフォールバック
-                logger.warning("LINE Flex Message 送信失敗 — テキスト送信にフォールバック")
-                if line_notifier.send(alt_text):
-                    logger.info("LINE テキスト通知送信完了")
+                # Flex Message（リッチ表示）を優先送信
+                flex_contents = line_formatter.build_flex_summary(
+                    market_data, top_buy, top_sell,
+                )
+                alt_text = line_formatter.format_summary(
+                    market_data, top_buy, top_sell,
+                )
+                if line_notifier.send_flex(alt_text, flex_contents):
+                    logger.info("LINE Flex Message 送信完了")
                 else:
-                    logger.warning("LINE 通知の送信に失敗しました")
+                    # Flex 失敗時はテキストにフォールバック
+                    logger.warning("LINE Flex Message 送信失敗 — テキスト送信にフォールバック")
+                    if line_notifier.send(alt_text):
+                        logger.info("LINE テキスト通知送信完了")
+                    else:
+                        logger.warning("LINE 通知の送信に失敗しました")
+            else:
+                logger.info("Step 7: LINE 認証情報未設定 — LINE 通知をスキップ")
         else:
-            logger.info("Step 7: LINE 認証情報未設定 — LINE 通知をスキップ")
+            logger.info("Step 7: LINE 通知をスキップ (channel=%s)", channel)
 
         elapsed = time.time() - start_time
         logger.info(f"=== スキャン完了（{elapsed:.1f}秒） ===")
@@ -195,22 +202,32 @@ def main() -> int:
         logger.error(f"スキャン中にエラー発生: {e}", exc_info=True)
 
         # エラー通知
-        try:
-            notifier = DiscordNotifier()
-            notifier.send_error(str(e))
-        except Exception:
-            logger.error("エラー通知の送信にも失敗しました")
+        if channel in ("discord", "all"):
+            try:
+                notifier = DiscordNotifier()
+                notifier.send_error(str(e))
+            except Exception:
+                logger.error("エラー通知の送信にも失敗しました")
 
         # LINE にもエラー通知を試行
-        try:
-            if LINE_CHANNEL_TOKEN and LINE_USER_ID:
-                line_notifier = LINENotifier()
-                line_notifier.send(f"【スキャンエラー】\n{str(e)[:4000]}")
-        except Exception:
-            logger.error("LINE エラー通知の送信にも失敗しました")
+        if channel in ("line", "all"):
+            try:
+                if LINE_CHANNEL_TOKEN and LINE_USER_ID:
+                    line_notifier = LINENotifier()
+                    line_notifier.send(f"【スキャンエラー】\n{str(e)[:4000]}")
+            except Exception:
+                logger.error("LINE エラー通知の送信にも失敗しました")
 
         return 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    parser = argparse.ArgumentParser(description="日本株スイングトレードスキャン")
+    parser.add_argument(
+        "--channel",
+        choices=["discord", "line", "all"],
+        default="all",
+        help="通知チャンネル (discord/line/all)",
+    )
+    args = parser.parse_args()
+    sys.exit(main(channel=args.channel))

@@ -1,16 +1,16 @@
-name: Daily Stock Scan
+name: Morning LINE Notification
 
 on:
   schedule:
-    # UTC 09:00 = JST 18:00（東証場後）月〜金
-    - cron: '0 9 * * 1-5'
+    # UTC 22:30 = JST 07:30（朝の通知）日〜木 → JST 月〜金の朝
+    - cron: '30 22 * * 0-4'
   workflow_dispatch:
 
 env:
   TZ: Asia/Tokyo
 
 jobs:
-  scan:
+  notify:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -25,12 +25,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run stock scan
-        run: python -m src.main --channel discord
+      - name: Run scan and send LINE notification
+        run: python -m src.main --channel line
         env:
           JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
-          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
           LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
