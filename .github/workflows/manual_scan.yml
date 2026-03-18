@@ -13,6 +13,9 @@ on:
           - INFO
           - WARNING
 
+env:
+  TZ: Asia/Tokyo
+
 jobs:
   scan:
     runs-on: ubuntu-latest

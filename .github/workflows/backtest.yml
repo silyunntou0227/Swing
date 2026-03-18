@@ -12,6 +12,9 @@ on:
         required: false
         default: '2026-03-18'
 
+env:
+  TZ: Asia/Tokyo
+
 jobs:
   backtest:
     runs-on: ubuntu-latest
