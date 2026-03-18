@@ -9,6 +9,7 @@ import pandas as pd
 from src.config import (
     DISCLOSURE_SCORES,
     EDINET_SCORES,
+    EXCLUSION_SCORE,
     POSITIVE_KEYWORDS,
     NEGATIVE_KEYWORDS,
     NEWS_SCORE_MAX,
@@ -49,7 +50,7 @@ class NewsFilter:
                 for _, row in code_disclosures.iterrows():
                     dtype = row.get("disclosure_type", "")
                     score = DISCLOSURE_SCORES.get(dtype, 0)
-                    if score == -999:
+                    if score == EXCLUSION_SCORE:
                         logger.debug(f"{code}: {dtype} により除外")
                         return True
         return False
@@ -74,7 +75,7 @@ class NewsFilter:
                 dtype = row.get("disclosure_type", "その他")
                 title = row.get("title", "")
                 dscore = DISCLOSURE_SCORES.get(dtype, 0)
-                if dscore != -999:  # 除外対象は別処理
+                if dscore != EXCLUSION_SCORE:  # 除外対象は別処理
                     score += dscore
                     summaries.append(f"{dtype}({dscore:+d})")
 

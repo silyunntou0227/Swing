@@ -16,9 +16,6 @@ except ImportError:
 # API認証情報（環境変数から取得）
 # ============================================================
 JQUANTS_API_KEY = os.environ.get("JQUANTS_API_KEY", "")
-# V1互換用（非推奨）
-JQUANTS_MAIL = os.environ.get("JQUANTS_MAIL", "")
-JQUANTS_PASSWORD = os.environ.get("JQUANTS_PASSWORD", "")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 LINE_CHANNEL_TOKEN = os.environ.get("LINE_CHANNEL_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
@@ -94,6 +91,9 @@ ICHIMOKU_SENKOU_B = 52
 # ============================================================
 # ニュース・開示スコアリング（Layer 4）
 # ============================================================
+# 除外スコア（MBO/TOBなど、スクリーニングから強制除外する銘柄用）
+EXCLUSION_SCORE = -999
+
 # TDnet適時開示スコア
 DISCLOSURE_SCORES = {
     "業績上方修正": 12,
@@ -102,8 +102,8 @@ DISCLOSURE_SCORES = {
     "株式分割": 5,
     "業績下方修正": -18,
     "減配": -10,
-    "MBO": -999,  # 除外
-    "TOB": -999,  # 除外
+    "MBO": EXCLUSION_SCORE,
+    "TOB": EXCLUSION_SCORE,
 }
 
 # EDINET開示スコア
@@ -174,6 +174,7 @@ class ScoringWeights:
 
 
 SCORING_WEIGHTS = ScoringWeights()
+assert SCORING_WEIGHTS.validate(), "スコアリングウェイトの合計が1.0ではありません"
 
 # ============================================================
 # リスク管理

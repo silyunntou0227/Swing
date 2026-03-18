@@ -58,64 +58,24 @@ def get_all_signals(df: pd.DataFrame) -> list[str]:
 
     signals = []
 
-    # トレンド系シグナル
-    try:
-        gc_dc = detect_golden_dead_cross(df)
-        signals.extend(gc_dc)
-    except Exception:
-        pass
+    # 各シグナル検出関数を順に実行（個別の失敗が全体を止めないようにする）
+    _signal_funcs = [
+        ("トレンド/GC・DC", detect_golden_dead_cross),
+        ("MACD", detect_macd_cross),
+        ("一目均衡表", detect_ichimoku_signals),
+        ("SMAアラインメント", detect_sma_alignment),
+        ("グランビル", detect_granville_signals),
+        ("オシレーター", get_oscillator_signals),
+        ("出来高", get_volume_signals),
+        ("パターン", get_pattern_signals),
+        ("波動分析", get_wave_signals),
+    ]
 
-    try:
-        macd_signals = detect_macd_cross(df)
-        signals.extend(macd_signals)
-    except Exception:
-        pass
-
-    try:
-        ichimoku_signals = detect_ichimoku_signals(df)
-        signals.extend(ichimoku_signals)
-    except Exception:
-        pass
-
-    try:
-        alignment = detect_sma_alignment(df)
-        signals.extend(alignment)
-    except Exception:
-        pass
-
-    try:
-        granville = detect_granville_signals(df)
-        signals.extend(granville)
-    except Exception:
-        pass
-
-    # オシレーター系シグナル
-    try:
-        osc_signals = get_oscillator_signals(df)
-        signals.extend(osc_signals)
-    except Exception:
-        pass
-
-    # 出来高系シグナル
-    try:
-        vol_signals = get_volume_signals(df)
-        signals.extend(vol_signals)
-    except Exception:
-        pass
-
-    # パターン系シグナル
-    try:
-        pat_signals = get_pattern_signals(df)
-        signals.extend(pat_signals)
-    except Exception:
-        pass
-
-    # 波動分析シグナル
-    try:
-        wave_signals = get_wave_signals(df)
-        signals.extend(wave_signals)
-    except Exception:
-        pass
+    for name, func in _signal_funcs:
+        try:
+            signals.extend(func(df))
+        except (KeyError, IndexError, ValueError, TypeError) as e:
+            logger.debug(f"シグナル検出スキップ ({name}): {e}")
 
     return signals
 

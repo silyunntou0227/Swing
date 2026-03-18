@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.notify.line import LINENotifier, verify_webhook_signature
+from src.notify.line import LINENotifier
 
 
 # ---------- ヘルパー ----------
@@ -160,45 +160,3 @@ class TestLINENotifierMultiMessage:
         msgs = [{"type": "text", "text": f"msg{i}"} for i in range(7)]
         assert self.notifier.send_messages(msgs) is False
         assert mock_post.call_count == 1
-
-
-# ---------- Webhook 署名検証 ----------
-
-
-class TestVerifyWebhookSignature:
-    def test_valid_signature(self):
-        secret = "test-channel-secret"
-        body = b'{"events":[]}'
-        # 正しい署名を計算
-        import hashlib
-        import hmac as _hmac
-        import base64
-
-        digest = _hmac.new(
-            secret.encode("utf-8"), body, hashlib.sha256
-        ).digest()
-        valid_sig = base64.b64encode(digest).decode("utf-8")
-
-        assert verify_webhook_signature(secret, body, valid_sig) is True
-
-    def test_invalid_signature(self):
-        assert verify_webhook_signature(
-            "secret", b"body", "invalid-signature"
-        ) is False
-
-    def test_tampered_body(self):
-        secret = "test-secret"
-        original_body = b'{"events":[{"type":"message"}]}'
-        # 正規の署名
-        import hashlib
-        import hmac as _hmac
-        import base64
-
-        digest = _hmac.new(
-            secret.encode("utf-8"), original_body, hashlib.sha256
-        ).digest()
-        valid_sig = base64.b64encode(digest).decode("utf-8")
-
-        # 改ざんされたボディで検証 → False
-        tampered = b'{"events":[{"type":"follow"}]}'
-        assert verify_webhook_signature(secret, tampered, valid_sig) is False

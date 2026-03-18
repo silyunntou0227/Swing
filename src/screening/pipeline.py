@@ -166,7 +166,8 @@ class ScreeningPipeline:
             # テクニカル指標を1回だけ計算（Layer 2+3 共有）
             try:
                 stock_prices = calculate_all_indicators(stock_prices)
-            except Exception:
+            except (KeyError, IndexError, ValueError, TypeError) as e:
+                logger.debug(f"指標計算スキップ ({code}): {e}")
                 continue
 
             if len(stock_prices) < 30:
@@ -185,7 +186,8 @@ class ScreeningPipeline:
             # --- Layer 3 チェック: エントリーシグナル ---
             try:
                 signals = get_all_signals(stock_prices)
-            except Exception:
+            except (KeyError, IndexError, ValueError, TypeError) as e:
+                logger.debug(f"シグナル検出スキップ ({code}): {e}")
                 continue
 
             if not signals:

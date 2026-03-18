@@ -6,8 +6,6 @@ DataFrameには Date, Open, High, Low, Close, Volume カラムが必要。
 
 from __future__ import annotations
 
-from typing import List
-
 import pandas as pd
 
 try:
@@ -76,7 +74,7 @@ def detect_volume_spike(df: pd.DataFrame) -> pd.DataFrame:
 # ------------------------------------------------------------------
 def _volume_trend(df: pd.DataFrame, window: int = 5) -> pd.Series:
     """直近 *window* 日間の出来高が増加傾向か減少傾向かを判定する。"""
-    slopes: List[str] = []
+    slopes: list[str] = []
     volumes = df["Volume"].values
     for i in range(len(volumes)):
         if i < window - 1:
@@ -113,13 +111,13 @@ def calculate_all_volume_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # ------------------------------------------------------------------
 # 直近バーの出来高シグナル取得
 # ------------------------------------------------------------------
-def get_volume_signals(df: pd.DataFrame) -> List[str]:
+def get_volume_signals(df: pd.DataFrame) -> list[str]:
     """直近（最新）バーの出来高関連シグナルを文字列リストで返す。"""
     df = calculate_all_volume_indicators(df)
     if df.empty:
         return []
 
-    signals: List[str] = []
+    signals: list[str] = []
     last = df.iloc[-1]
 
     if last.get("VolumeSpike", False):

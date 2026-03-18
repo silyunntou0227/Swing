@@ -178,15 +178,7 @@ class ResultFormatter:
             })
 
         # トレンド・テクニカル
-        tech_parts = []
-        if c.trend_score > 0:
-            tech_parts.append(f"トレンド: {c.trend_score:.0f}")
-        if c.macd_score > 0:
-            tech_parts.append(f"MACD: {c.macd_score:.0f}")
-        if c.rsi_score > 0:
-            tech_parts.append(f"RSI: {c.rsi_score:.0f}")
-        if c.ichimoku_score > 0:
-            tech_parts.append(f"一目: {c.ichimoku_score:.0f}")
+        tech_parts = _format_tech_scores(c, with_colon=True)
         if tech_parts:
             fields.append({
                 "name": "テクニカル",
@@ -439,6 +431,26 @@ def _build_reasoning_text(c: ScoredCandidate) -> str:
     return "\n".join(parts)
 
 
+def _format_tech_scores(c: ScoredCandidate, with_colon: bool = False) -> list[str]:
+    """テクニカルスコアの共通フォーマット
+
+    Args:
+        c: スコアリング済み候補
+        with_colon: True なら "トレンド: 90" 形式、False なら "トレンド90" 形式
+    """
+    sep = ": " if with_colon else ""
+    parts = []
+    if c.trend_score > 0:
+        parts.append(f"トレンド{sep}{c.trend_score:.0f}")
+    if c.macd_score > 0:
+        parts.append(f"MACD{sep}{c.macd_score:.0f}")
+    if c.rsi_score > 0:
+        parts.append(f"RSI{sep}{c.rsi_score:.0f}")
+    if c.ichimoku_score > 0:
+        parts.append(f"一目{sep}{c.ichimoku_score:.0f}")
+    return parts
+
+
 def _chunked(lst: list, size: int) -> list[list]:
     """リストを size 個ずつのチャンクに分割"""
     return [lst[i:i + size] for i in range(0, len(lst), size)]
@@ -492,13 +504,7 @@ class LINEResultFormatter:
                 if c.signals:
                     lines.append(f"   シグナル: {', '.join(c.signals[:5])}")
                 # テクニカル
-                tech = []
-                if c.trend_score > 0:
-                    tech.append(f"トレンド{c.trend_score:.0f}")
-                if c.macd_score > 0:
-                    tech.append(f"MACD{c.macd_score:.0f}")
-                if c.rsi_score > 0:
-                    tech.append(f"RSI{c.rsi_score:.0f}")
+                tech = _format_tech_scores(c)
                 if tech:
                     lines.append(f"   テクニカル: {' | '.join(tech)}")
                 # ファンダ
@@ -538,11 +544,7 @@ class LINEResultFormatter:
                 if c.signals:
                     lines.append(f"   シグナル: {', '.join(c.signals[:5])}")
                 # テクニカル
-                tech = []
-                if c.trend_score > 0:
-                    tech.append(f"トレンド{c.trend_score:.0f}")
-                if c.macd_score > 0:
-                    tech.append(f"MACD{c.macd_score:.0f}")
+                tech = _format_tech_scores(c)
                 if tech:
                     lines.append(f"   テクニカル: {' | '.join(tech)}")
                 # ファンダ
@@ -798,15 +800,7 @@ class LINEResultFormatter:
             })
 
         # テクニカルスコア
-        tech_parts = []
-        if c.trend_score > 0:
-            tech_parts.append(f"トレンド{c.trend_score:.0f}")
-        if c.macd_score > 0:
-            tech_parts.append(f"MACD{c.macd_score:.0f}")
-        if c.rsi_score > 0:
-            tech_parts.append(f"RSI{c.rsi_score:.0f}")
-        if c.ichimoku_score > 0:
-            tech_parts.append(f"一目{c.ichimoku_score:.0f}")
+        tech_parts = _format_tech_scores(c)
         if tech_parts:
             body_contents.append({
                 "type": "text",

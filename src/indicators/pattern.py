@@ -7,8 +7,6 @@ DataFrameには Date, Open, High, Low, Close, Volume カラムが必要。
 
 from __future__ import annotations
 
-from typing import List
-
 import numpy as np
 import pandas as pd
 
@@ -268,7 +266,7 @@ def detect_three_soldiers_crows(df: pd.DataFrame) -> pd.DataFrame:
 # 全パターンシグナル取得
 # ==================================================================
 
-def get_pattern_signals(df: pd.DataFrame) -> List[str]:
+def get_pattern_signals(df: pd.DataFrame) -> list[str]:
     """直近（最新）バーで検出された全ローソク足パターンを文字列リストで返す。
 
     内部で全パターン検出関数を実行し、最新バーの結果をまとめる。
@@ -289,7 +287,7 @@ def get_pattern_signals(df: pd.DataFrame) -> List[str]:
     if df.empty:
         return []
 
-    signals: List[str] = []
+    signals: list[str] = []
     last = df.iloc[-1]
 
     # 包み足
