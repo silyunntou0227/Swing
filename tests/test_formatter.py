@@ -1,0 +1,245 @@
+"""通知フォーマッターのユニットテスト"""
+
+import pytest
+
+from src.notify.formatter import (
+    ResultFormatter,
+    ScoredCandidate,
+    _build_reasoning_text,
+    _chunked,
+)
+
+
+# ---------- ヘルパー ----------
+
+def _make_candidate(**overrides) -> ScoredCandidate:
+    """テスト用 ScoredCandidate を生成"""
+    defaults = dict(
+        code="7203", name="トヨタ自動車", close=2500.0,
+        total_score=82.0, direction="buy",
+        trend_score=80, macd_score=70, volume_score=60,
+        fundamental_score=55, rsi_score=65, ichimoku_score=75,
+        pattern_score=40, risk_reward_score=50,
+        news_score=45, margin_score=30, sector_score=60,
+        macro_adjustment=3,
+        signals=["ゴールデンクロス", "MACD買い転換", "包み足(強気)"],
+        per=15.2, pbr=1.8, roe=12.5,
+        news_sentiment="ポジティブ",
+        sector_name="電気機器", sector_explanation="半導体需要拡大",
+    )
+    defaults.update(overrides)
+    return ScoredCandidate(**defaults)
+
+
+# ---------- _chunked ----------
+
+class TestChunked:
+    def test_exact_division(self):
+        assert _chunked([1, 2, 3, 4], 2) == [[1, 2], [3, 4]]
+
+    def test_remainder(self):
+        assert _chunked([1, 2, 3, 4, 5], 3) == [[1, 2, 3], [4, 5]]
+
+    def test_empty(self):
+        assert _chunked([], 5) == []
+
+    def test_single_chunk(self):
+        assert _chunked([1, 2], 10) == [[1, 2]]
+
+
+# ---------- _build_reasoning_text ----------
+
+class TestBuildReasoningText:
+    def test_contains_top3_factors(self):
+        c = _make_candidate()
+        text = _build_reasoning_text(c)
+        assert "主要因子:" in text
+        # 加重スコア上位3因子が含まれる
+        assert "トレンド" in text
+
+    def test_contains_signals(self):
+        c = _make_candidate(signals=["ゴールデンクロス", "MACD買い転換"])
+        text = _build_reasoning_text(c)
+        assert "シグナル:" in text
+        assert "ゴールデンクロス" in text
+        assert "MACD買い転換" in text
+
+    def test_signals_limited_to_4(self):
+        c = _make_candidate(signals=[f"sig{i}" for i in range(10)])
+        text = _build_reasoning_text(c)
+        # 最大4つまで
+        assert "sig3" in text
+        assert "sig4" not in text
+
+    def test_contains_fundamentals(self):
+        c = _make_candidate(per=12.3, pbr=0.9, roe=15.0)
+        text = _build_reasoning_text(c)
+        assert "PER 12.3" in text
+        assert "PBR 0.90" in text
+        assert "ROE 15.0%" in text
+
+    def test_no_fundamentals_when_none(self):
+        c = _make_candidate(per=None, pbr=None, roe=None)
+        text = _build_reasoning_text(c)
+        assert "PER" not in text
+        assert "PBR" not in text
+        assert "ROE" not in text
+
+    def test_contains_news_sentiment(self):
+        c = _make_candidate(news_sentiment="ネガティブ")
+        text = _build_reasoning_text(c)
+        assert "ニュース: ネガティブ" in text
+
+    def test_no_news_when_empty(self):
+        c = _make_candidate(news_sentiment="")
+        text = _build_reasoning_text(c)
+        assert "ニュース:" not in text
+
+    def test_contains_sector(self):
+        c = _make_candidate(sector_name="電気機器", sector_explanation="半導体需要拡大")
+        text = _build_reasoning_text(c)
+        assert "セクター: 電気機器（半導体需要拡大）" in text
+
+    def test_sector_without_explanation(self):
+        c = _make_candidate(sector_name="電気機器", sector_explanation="")
+        text = _build_reasoning_text(c)
+        assert "セクター: 電気機器" in text
+        assert "（" not in text
+
+    def test_contains_macro_adjustment(self):
+        c = _make_candidate(macro_adjustment=5)
+        text = _build_reasoning_text(c)
+        assert "マクロ調整: +5点" in text
+
+    def test_negative_macro_adjustment(self):
+        c = _make_candidate(macro_adjustment=-3)
+        text = _build_reasoning_text(c)
+        assert "マクロ調整: -3点" in text
+
+    def test_no_macro_when_zero(self):
+        c = _make_candidate(macro_adjustment=0)
+        text = _build_reasoning_text(c)
+        assert "マクロ調整" not in text
+
+    def test_no_signals_when_empty(self):
+        c = _make_candidate(signals=[])
+        text = _build_reasoning_text(c)
+        assert "シグナル:" not in text
+
+
+# ---------- format_scoring_summary ----------
+
+class TestFormatScoringSummary:
+    def setup_method(self):
+        self.formatter = ResultFormatter()
+
+    def test_returns_list_of_embeds(self):
+        buys = [_make_candidate(code="7203"), _make_candidate(code="6758")]
+        embeds = self.formatter.format_scoring_summary(buys, [])
+        assert isinstance(embeds, list)
+        assert all(isinstance(e, dict) for e in embeds)
+
+    def test_buy_only_has_ranking_and_reasoning(self):
+        buys = [_make_candidate(code=f"{i}") for i in range(3)]
+        embeds = self.formatter.format_scoring_summary(buys, [])
+        # 1 ranking table + 1 reasoning embed (3 candidates < 5 per chunk)
+        assert len(embeds) == 2
+        assert "ランキング" in embeds[0]["title"]
+        assert "推論サマリー" in embeds[1]["title"]
+
+    def test_sell_only(self):
+        sells = [_make_candidate(direction="sell", code=f"{i}") for i in range(2)]
+        embeds = self.formatter.format_scoring_summary([], sells)
+        assert len(embeds) == 2
+        assert "売り候補ランキング" in embeds[0]["title"]
+        assert "売り候補 推論サマリー" in embeds[1]["title"]
+
+    def test_both_buy_and_sell(self):
+        buys = [_make_candidate(code="7203")]
+        sells = [_make_candidate(direction="sell", code="6758")]
+        embeds = self.formatter.format_scoring_summary(buys, sells)
+        # buy ranking + buy reasoning + sell ranking + sell reasoning
+        assert len(embeds) == 4
+
+    def test_empty_candidates(self):
+        embeds = self.formatter.format_scoring_summary([], [])
+        assert embeds == []
+
+    def test_ranking_table_contains_code_and_score(self):
+        buys = [_make_candidate(code="7203", total_score=85, close=3000)]
+        embeds = self.formatter.format_scoring_summary(buys, [])
+        desc = embeds[0]["description"]
+        assert "7203" in desc
+        assert "85" in desc
+        assert "3,000" in desc
+
+    def test_reasoning_fields_match_candidate_count(self):
+        buys = [_make_candidate(code=f"{i}") for i in range(3)]
+        embeds = self.formatter.format_scoring_summary(buys, [])
+        reasoning_embed = embeds[1]
+        assert len(reasoning_embed["fields"]) == 3
+
+    def test_chunking_with_many_candidates(self):
+        """6銘柄 → 5+1 の2チャンクに分割される"""
+        buys = [_make_candidate(code=f"{i}") for i in range(6)]
+        embeds = self.formatter.format_scoring_summary(buys, [])
+        # 1 ranking + 2 reasoning embeds (5 + 1)
+        assert len(embeds) == 3
+        assert len(embeds[1]["fields"]) == 5
+        assert len(embeds[2]["fields"]) == 1
+
+    def test_ranking_table_color_buy(self):
+        buys = [_make_candidate()]
+        embeds = self.formatter.format_scoring_summary(buys, [])
+        assert embeds[0]["color"] == ResultFormatter.COLOR_BUY
+
+    def test_ranking_table_color_sell(self):
+        sells = [_make_candidate(direction="sell")]
+        embeds = self.formatter.format_scoring_summary([], sells)
+        assert embeds[0]["color"] == ResultFormatter.COLOR_SELL
+
+    def test_reasoning_field_name_includes_score(self):
+        buys = [_make_candidate(name="テスト銘柄", code="1234", total_score=77)]
+        embeds = self.formatter.format_scoring_summary(buys, [])
+        field = embeds[1]["fields"][0]
+        assert "テスト銘柄" in field["name"]
+        assert "1234" in field["name"]
+        assert "77" in field["name"]
+
+    def test_long_name_truncated_in_table(self):
+        """9文字以上の銘柄名はテーブルで8文字に切り詰め"""
+        buys = [_make_candidate(name="あいうえおかきくけ")]  # 9文字
+        embeds = self.formatter.format_scoring_summary(buys, [])
+        desc = embeds[0]["description"]
+        assert "あいうえおかきく" in desc  # 8文字に切り詰め
+        assert "あいうえおかきくけ" not in desc
+
+
+# ---------- _build_ranking_table (直接テスト) ----------
+
+class TestBuildRankingTable:
+    def setup_method(self):
+        self.formatter = ResultFormatter()
+
+    def test_code_block_formatting(self):
+        candidates = [_make_candidate()]
+        embed = self.formatter._build_ranking_table(candidates, "buy")
+        assert embed["description"].startswith("```")
+        assert embed["description"].endswith("```")
+
+    def test_multiple_candidates_numbered(self):
+        candidates = [
+            _make_candidate(code="7203", total_score=90),
+            _make_candidate(code="6758", total_score=80),
+        ]
+        embed = self.formatter._build_ranking_table(candidates, "buy")
+        desc = embed["description"]
+        assert " 1 " in desc
+        assert " 2 " in desc
+        assert "7203" in desc
+        assert "6758" in desc
+
+    def test_count_in_title(self):
+        candidates = [_make_candidate() for _ in range(3)]
+        embed = self.formatter._build_ranking_table(candidates, "sell")
+        assert "3件" in embed["title"]
