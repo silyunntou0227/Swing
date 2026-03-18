@@ -152,22 +152,23 @@ PARTIAL_EXIT_ATR_MULT = 1.5   # 部分利確: ATR×1.5（50%決済）
 # ボリューム系: 15%, ファンダ: 10%, その他: 15%
 @dataclass
 class ScoringWeights:
-    trend: float = 0.22       # 18→22: トレンドが最強の予測因子
-    macd: float = 0.15        # 12→15: モメンタム重視
-    volume: float = 0.12      # 据え置き
-    fundamental: float = 0.10  # 13→10: 短期では影響小
-    rsi: float = 0.10         # 8→10: Connors RSI追加で精度向上
-    ichimoku: float = 0.13    # 8→13: トレンドフィルタとして有効
-    pattern: float = 0.05     # 8→5: 学術研究で単独効果は限定的
+    trend: float = 0.20       # 22→20: セクター追加に伴い再配分
+    macd: float = 0.14        # 15→14
+    volume: float = 0.11      # 12→11
+    fundamental: float = 0.10  # 据え置き
+    rsi: float = 0.10         # 据え置き
+    ichimoku: float = 0.12    # 13→12
+    pattern: float = 0.05     # 据え置き
     risk_reward: float = 0.05  # 据え置き
-    news_disclosure: float = 0.05  # 10→5: データ取得制限あり
-    margin_supply: float = 0.03    # 6→3: データ取得制限あり
+    news_disclosure: float = 0.05  # 据え置き
+    margin_supply: float = 0.03    # 据え置き
+    sector: float = 0.05      # NEW: セクターローテーション分析
 
     def validate(self) -> bool:
         total = sum([
             self.trend, self.macd, self.volume, self.fundamental,
             self.rsi, self.ichimoku, self.pattern, self.risk_reward,
-            self.news_disclosure, self.margin_supply,
+            self.news_disclosure, self.margin_supply, self.sector,
         ])
         return abs(total - 1.0) < 0.001
 

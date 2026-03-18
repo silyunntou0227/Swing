@@ -13,7 +13,11 @@ from typing import List
 
 import numpy as np
 import pandas as pd
-import ta as ta_lib
+
+try:
+    import ta as ta_lib
+except ImportError:
+    ta_lib = None  # type: ignore[assignment]
 
 from src.config import (
     ADX_MIN,

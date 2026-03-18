@@ -44,6 +44,11 @@ class ScoredCandidate:
     margin_ratio: float | None = None
     short_selling_ratio: float | None = None
 
+    # セクター分析
+    sector_name: str = ""  # TOPIX-17セクター名
+    sector_score: float = 0.0
+    sector_explanation: str = ""
+
     # ニュース
     news_summary: str = ""
     news_sentiment: str = ""
@@ -214,6 +219,17 @@ class ResultFormatter:
             fields.append({
                 "name": "需給",
                 "value": " | ".join(supply_parts),
+                "inline": True,
+            })
+
+        # セクター分析
+        if c.sector_name:
+            sector_text = f"{c.sector_name}"
+            if c.sector_explanation:
+                sector_text += f" | {c.sector_explanation}"
+            fields.append({
+                "name": "セクター分析",
+                "value": sector_text,
                 "inline": True,
             })
 

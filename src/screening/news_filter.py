@@ -14,7 +14,6 @@ from src.config import (
     NEWS_SCORE_MAX,
     NEWS_SCORE_MIN,
 )
-from src.data.news_client import NewsClient
 from src.utils.logging_config import logger
 
 if TYPE_CHECKING:
@@ -25,7 +24,12 @@ class NewsFilter:
     """ニュース・開示情報に基づくフィルタリングとスコアリング"""
 
     def __init__(self) -> None:
-        self._news_client = NewsClient()
+        self._news_client = None
+        try:
+            from src.data.news_client import NewsClient
+            self._news_client = NewsClient()
+        except ImportError:
+            pass  # feedparser等が無い環境ではニュース機能を無効化
 
     def should_exclude(self, code: str, market_data: MarketData) -> bool:
         """銘柄を除外すべきか判定（MBO/TOB等）
