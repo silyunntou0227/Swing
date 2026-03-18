@@ -490,13 +490,41 @@ class LINEResultFormatter:
                     f"スコア{c.total_score:.0f} ¥{c.close:,.0f}"
                 )
                 if c.signals:
-                    lines.append(f"   シグナル: {', '.join(c.signals[:3])}")
+                    lines.append(f"   シグナル: {', '.join(c.signals[:5])}")
+                # テクニカル
+                tech = []
+                if c.trend_score > 0:
+                    tech.append(f"トレンド{c.trend_score:.0f}")
+                if c.macd_score > 0:
+                    tech.append(f"MACD{c.macd_score:.0f}")
+                if c.rsi_score > 0:
+                    tech.append(f"RSI{c.rsi_score:.0f}")
+                if tech:
+                    lines.append(f"   テクニカル: {' | '.join(tech)}")
+                # ファンダ
+                fund = []
+                if c.per is not None:
+                    fund.append(f"PER{c.per:.1f}")
+                if c.pbr is not None:
+                    fund.append(f"PBR{c.pbr:.2f}")
+                if c.roe is not None:
+                    fund.append(f"ROE{c.roe:.1f}%")
+                if fund:
+                    lines.append(f"   {' | '.join(fund)}")
+                # セクター・ニュース
+                if c.sector_name:
+                    lines.append(f"   セクター: {c.sector_name}")
+                if c.news_summary:
+                    lines.append(f"   ニュース: {c.news_sentiment} {c.news_summary[:60]}")
+                # リスク管理
                 if c.stop_loss > 0:
                     lines.append(
                         f"   SL ¥{c.stop_loss:,.0f}({sl_pct:+.1f}%) "
                         f"TP ¥{c.take_profit:,.0f}({tp_pct:+.1f}%) "
                         f"R:R 1:{c.risk_reward_ratio:.1f}"
                     )
+                if c.recommended_hold_days > 0:
+                    lines.append(f"   推奨保有: {c.recommended_hold_days}日")
             lines.append("")
 
         # 売り候補
@@ -508,7 +536,33 @@ class LINEResultFormatter:
                     f"スコア{c.total_score:.0f} ¥{c.close:,.0f}"
                 )
                 if c.signals:
-                    lines.append(f"   シグナル: {', '.join(c.signals[:3])}")
+                    lines.append(f"   シグナル: {', '.join(c.signals[:5])}")
+                # テクニカル
+                tech = []
+                if c.trend_score > 0:
+                    tech.append(f"トレンド{c.trend_score:.0f}")
+                if c.macd_score > 0:
+                    tech.append(f"MACD{c.macd_score:.0f}")
+                if tech:
+                    lines.append(f"   テクニカル: {' | '.join(tech)}")
+                # ファンダ
+                fund = []
+                if c.per is not None:
+                    fund.append(f"PER{c.per:.1f}")
+                if c.pbr is not None:
+                    fund.append(f"PBR{c.pbr:.2f}")
+                if fund:
+                    lines.append(f"   {' | '.join(fund)}")
+                if c.sector_name:
+                    lines.append(f"   セクター: {c.sector_name}")
+                if c.stop_loss > 0:
+                    sl_pct = (c.stop_loss - c.close) / c.close * 100
+                    tp_pct = (c.take_profit - c.close) / c.close * 100
+                    lines.append(
+                        f"   SL ¥{c.stop_loss:,.0f}({sl_pct:+.1f}%) "
+                        f"TP ¥{c.take_profit:,.0f}({tp_pct:+.1f}%) "
+                        f"R:R 1:{c.risk_reward_ratio:.1f}"
+                    )
             lines.append("")
 
         if not buy_candidates and not sell_candidates:
@@ -733,29 +787,33 @@ class LINEResultFormatter:
 
         # シグナル
         if c.signals:
-            signals_text = ", ".join(c.signals[:3])
+            signals_text = ", ".join(c.signals[:5])
             body_contents.append({
                 "type": "text",
-                "text": signals_text,
+                "text": f"シグナル: {signals_text}",
                 "size": "xs",
                 "color": "#666666",
                 "margin": "md",
                 "wrap": True,
             })
 
-        # リスク管理（買い候補のみ）
-        if c.stop_loss > 0:
-            sl_pct = (c.stop_loss - c.close) / c.close * 100
-            tp_pct = (c.take_profit - c.close) / c.close * 100
+        # テクニカルスコア
+        tech_parts = []
+        if c.trend_score > 0:
+            tech_parts.append(f"トレンド{c.trend_score:.0f}")
+        if c.macd_score > 0:
+            tech_parts.append(f"MACD{c.macd_score:.0f}")
+        if c.rsi_score > 0:
+            tech_parts.append(f"RSI{c.rsi_score:.0f}")
+        if c.ichimoku_score > 0:
+            tech_parts.append(f"一目{c.ichimoku_score:.0f}")
+        if tech_parts:
             body_contents.append({
-                "type": "box",
-                "layout": "vertical",
-                "margin": "md",
-                "contents": [
-                    self._kv_row("損切り", f"¥{c.stop_loss:,.0f} ({sl_pct:+.1f}%)"),
-                    self._kv_row("利確", f"¥{c.take_profit:,.0f} ({tp_pct:+.1f}%)"),
-                    self._kv_row("R:R", f"1:{c.risk_reward_ratio:.1f}"),
-                ],
+                "type": "text",
+                "text": " | ".join(tech_parts),
+                "size": "xxs",
+                "color": "#3399FF",
+                "margin": "sm",
             })
 
         # ファンダメンタル
@@ -772,8 +830,107 @@ class LINEResultFormatter:
                 "text": " | ".join(fund_parts),
                 "size": "xxs",
                 "color": "#999999",
-                "margin": "md",
+                "margin": "sm",
             })
+
+        # 需給
+        supply_parts = []
+        if c.margin_ratio is not None:
+            supply_parts.append(f"信用倍率{c.margin_ratio:.1f}")
+        if c.short_selling_ratio is not None:
+            supply_parts.append(f"空売り比率{c.short_selling_ratio:.0f}%")
+        if supply_parts:
+            body_contents.append({
+                "type": "text",
+                "text": " | ".join(supply_parts),
+                "size": "xxs",
+                "color": "#999999",
+                "margin": "sm",
+            })
+
+        # セクター分析
+        if c.sector_name:
+            sector_text = c.sector_name
+            if c.sector_explanation:
+                sector_text += f" | {c.sector_explanation}"
+            body_contents.append({
+                "type": "text",
+                "text": f"セクター: {sector_text}",
+                "size": "xxs",
+                "color": "#999999",
+                "margin": "sm",
+                "wrap": True,
+            })
+
+        # ニュース
+        if c.news_summary:
+            news_text = f"{c.news_sentiment} {c.news_summary[:80]}"
+            body_contents.append({
+                "type": "text",
+                "text": f"ニュース: {news_text}",
+                "size": "xxs",
+                "color": "#999999",
+                "margin": "sm",
+                "wrap": True,
+            })
+
+        # 出口戦略
+        if c.recommended_hold_days > 0:
+            hold_parts = [f"保有{c.recommended_hold_days}日"]
+            if c.partial_exit_price > 0:
+                hold_parts.append(f"部分利確¥{c.partial_exit_price:,.0f}")
+            if c.trailing_stop_price > 0:
+                hold_parts.append(f"トレーリングSL¥{c.trailing_stop_price:,.0f}")
+            body_contents.append({
+                "type": "text",
+                "text": " | ".join(hold_parts),
+                "size": "xxs",
+                "color": "#666666",
+                "margin": "sm",
+            })
+
+        # リスク管理
+        if c.stop_loss > 0:
+            sl_pct = (c.stop_loss - c.close) / c.close * 100
+            tp_pct = (c.take_profit - c.close) / c.close * 100
+            risk_rows = [
+                self._kv_row("損切り", f"¥{c.stop_loss:,.0f} ({sl_pct:+.1f}%)"),
+                self._kv_row("利確", f"¥{c.take_profit:,.0f} ({tp_pct:+.1f}%)"),
+                self._kv_row("R:R", f"1:{c.risk_reward_ratio:.1f}"),
+            ]
+            if c.ruin_probability > 0:
+                risk_rows.append(self._kv_row("破産確率", f"{c.ruin_probability:.1f}%"))
+            body_contents.append({
+                "type": "box",
+                "layout": "vertical",
+                "margin": "md",
+                "contents": risk_rows,
+            })
+
+            # ポジションサイズ（買い候補のみ）
+            if is_buy:
+                risk_per_share = abs(c.close - c.stop_loss)
+                if risk_per_share > 0:
+                    pos_lines = []
+                    for capital in POSITION_SIZE_CAPITALS:
+                        risk_budget = capital * 0.01
+                        raw_shares = risk_budget / risk_per_share
+                        shares = (int(raw_shares) // 100) * 100
+                        label = f"¥{capital // 10000}万"
+                        min_cost = 100 * c.close
+                        if shares < 100 or min_cost > capital:
+                            pos_lines.append(f"{label}: 1%ルール内不可")
+                        else:
+                            cost = shares * c.close
+                            pos_lines.append(f"{label}: {shares}株(¥{cost:,.0f})")
+                    body_contents.append({
+                        "type": "text",
+                        "text": "ポジション: " + " / ".join(pos_lines),
+                        "size": "xxs",
+                        "color": "#999999",
+                        "margin": "sm",
+                        "wrap": True,
+                    })
 
         return {
             "type": "bubble",
