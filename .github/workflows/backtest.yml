@@ -12,6 +12,9 @@ on:
         required: false
         default: '2026-03-18'
 
+env:
+  TZ: Asia/Tokyo
+
 jobs:
   backtest:
     runs-on: ubuntu-latest
@@ -33,5 +36,7 @@ jobs:
         env:
           JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           CUTOFF_DATE: ${{ inputs.cutoff_date }}
           CHECK_DATE: ${{ inputs.check_date }}

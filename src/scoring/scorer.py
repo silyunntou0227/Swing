@@ -17,6 +17,11 @@ from src.screening.fundamental import calculate_fundamental_score
 from src.screening.news_filter import NewsFilter
 from src.screening.pipeline import CandidateStock
 from src.notify.formatter import ScoredCandidate
+from src.sector.sector_analyzer import (
+    estimate_market_phase,
+    calculate_sector_score,
+    resolve_sector_for_stock,
+)
 from src.utils.logging_config import logger
 
 
@@ -51,6 +56,10 @@ class MultiFactorScorer:
         scored = []
         macro_score = self._news_filter.get_macro_score(market_data)
 
+        # 景気サイクル局面を推定
+        market_phase = estimate_market_phase(market_data.macro_indicators)
+        logger.info(f"景気サイクル判定: {market_phase.value}")
+
         # 信用残データを一括取得（候補銘柄のみ）
         codes = [c.code for c in candidates]
         margin_data = pd.DataFrame()
@@ -62,7 +71,8 @@ class MultiFactorScorer:
         for candidate in candidates:
             try:
                 sc = self._score_single(
-                    candidate, market_data, direction, macro_score, margin_data
+                    candidate, market_data, direction, macro_score,
+                    margin_data, market_phase,
                 )
                 scored.append(sc)
             except Exception as e:
@@ -77,6 +87,7 @@ class MultiFactorScorer:
         direction: str,
         macro_score: float,
         margin_data: pd.DataFrame,
+        market_phase: "MarketPhase | None" = None,
     ) -> ScoredCandidate:
         """単一銘柄のスコアリング"""
         sc = ScoredCandidate(
@@ -140,6 +151,18 @@ class MultiFactorScorer:
         # === 10. 需給スコア ===
         sc.margin_score = self._calc_margin_score(candidate.code, margin_data, direction)
 
+        # === 11. セクタースコア ===
+        sc.sector_score = 50.0  # デフォルト: 中立
+        if market_phase is not None:
+            sector33 = resolve_sector_for_stock(candidate.code, market_data.stocks)
+            if sector33:
+                adj, explanation = calculate_sector_score(sector33, market_phase)
+                # -10〜+10 のスコア補正を 0-100 スケールに変換
+                sc.sector_score = max(0, min(100, 50 + adj * 5))
+                sc.sector_explanation = explanation
+                from src.sector.sector_config import get_topix17_sector
+                sc.sector_name = get_topix17_sector(sector33) or ""
+
         # === 加重平均 ===
         base_score = (
             sc.trend_score * w.trend
@@ -152,6 +175,7 @@ class MultiFactorScorer:
             + sc.risk_reward_score * w.risk_reward
             + sc.news_score * w.news_disclosure
             + sc.margin_score * w.margin_supply
+            + sc.sector_score * w.sector
         )
 
         # マクロ環境補正

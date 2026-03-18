@@ -25,11 +25,6 @@ import pandas as pd
 
 from src.data.stock_list import fetch_jpx_stock_list, get_tradeable_codes
 from src.data.yahoo_client import YahooClient
-from src.data.tdnet_client import TDnetClient
-from src.data.edinet_client import EDINETClient
-from src.data.news_client import NewsClient
-from src.data.macro_client import MacroClient
-from src.data.margin_client import MarginClient
 from src.config import JQUANTS_API_KEY
 from src.utils.logging_config import logger
 
@@ -222,6 +217,7 @@ class DataLoader:
     def _load_disclosures(self) -> pd.DataFrame:
         """TDnet適時開示データ取得"""
         try:
+            from src.data.tdnet_client import TDnetClient
             client = TDnetClient()
             df = client.fetch_today_disclosures()
             logger.info(f"TDnet適時開示: {len(df)}件取得")
@@ -233,6 +229,7 @@ class DataLoader:
     def _load_edinet(self) -> pd.DataFrame:
         """EDINET開示データ取得"""
         try:
+            from src.data.edinet_client import EDINETClient
             client = EDINETClient()
             df = client.fetch_recent_filings()
             logger.info(f"EDINET開示: {len(df)}件取得")
@@ -244,6 +241,7 @@ class DataLoader:
     def _load_news(self) -> pd.DataFrame:
         """ニュースデータ取得"""
         try:
+            from src.data.news_client import NewsClient
             client = NewsClient()
             df = client.fetch_market_news()
             logger.info(f"ニュース: {len(df)}件取得")
@@ -255,6 +253,7 @@ class DataLoader:
     def _load_macro(self) -> dict:
         """マクロ指標取得"""
         try:
+            from src.data.macro_client import MacroClient
             client = MacroClient()
             indicators = client.fetch_indicators()
             logger.info(f"マクロ指標: {len(indicators)}項目取得")

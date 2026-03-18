@@ -9,7 +9,11 @@ from __future__ import annotations
 from typing import List
 
 import pandas as pd
-import ta as ta_lib
+
+try:
+    import ta as ta_lib
+except ImportError:
+    ta_lib = None  # type: ignore[assignment]
 
 from src.config import ATR_PERIOD, VOLUME_SPIKE_RATIO
 

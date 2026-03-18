@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
@@ -15,9 +16,11 @@ from src.config import (
     BALSARA_PAYOFF_RATIO,
     ATR_PERIOD,
 )
-from src.data.data_loader import MarketData
-from src.notify.formatter import ScoredCandidate
 from src.utils.logging_config import logger
+
+if TYPE_CHECKING:
+    from src.data.data_loader import MarketData
+    from src.notify.formatter import ScoredCandidate
 
 
 class RiskCalculator:

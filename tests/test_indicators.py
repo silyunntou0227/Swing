@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+ta = pytest.importorskip("ta", reason="ta ライブラリが必要")
+
 
 def make_sample_ohlcv(n: int = 100, seed: int = 42) -> pd.DataFrame:
     """テスト用のサンプルOHLCVデータを生成"""

@@ -159,10 +159,13 @@ def main():
             price_str = f"¥{entry_price:,.0f}→? (N/A)"
 
         signals_short = ", ".join(c.signals[:2]) if c.signals else "-"
-        line = f"#{i} {c.name}({code}) スコア{c.total_score:.0f} | {price_str}"
+        sector_info = f" [{c.sector_name}]" if c.sector_name else ""
+        line = f"#{i} {c.name}({code}){sector_info} スコア{c.total_score:.0f} | {price_str}"
         output_lines.append(line)
         print(f"  {line}")
         print(f"      シグナル: {signals_short}")
+        if c.sector_explanation:
+            print(f"      セクター: {c.sector_explanation}")
 
     # --- 売り候補 ---
     output_lines.append(f"\n**売り候補 Top{len(top_sell)}**")
@@ -185,7 +188,8 @@ def main():
         else:
             price_str = f"¥{entry_price:,.0f}→? (N/A)"
 
-        line = f"#{i} {c.name}({code}) スコア{c.total_score:.0f} | {price_str}"
+        sector_info = f" [{c.sector_name}]" if c.sector_name else ""
+        line = f"#{i} {c.name}({code}){sector_info} スコア{c.total_score:.0f} | {price_str}"
         output_lines.append(line)
         print(f"  {line}")
 

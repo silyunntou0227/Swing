@@ -8,6 +8,9 @@ on:
         required: false
         default: '800'
 
+env:
+  TZ: Asia/Tokyo
+
 jobs:
   backtest:
     runs-on: ubuntu-latest
@@ -29,3 +32,5 @@ jobs:
         env:
           JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
