@@ -21,6 +21,8 @@ import time
 from dataclasses import dataclass, field
 from datetime import date
 
+import os
+
 import pandas as pd
 import requests
 
@@ -29,10 +31,10 @@ from src.data.yahoo_client import YahooClient
 from src.config import JQUANTS_API_KEY
 from src.utils.logging_config import logger
 
-# GitHub Actions 無料枠（2コア, 60分制限）で安全に完了するための銘柄上限
-# プライム全銘柄(~1800) でスイングトレードの主要対象をカバー
-# ローカル実行では MAX_STOCKS_FOR_DOWNLOAD=0 で全銘柄対応可
-MAX_STOCKS_FOR_DOWNLOAD = 1200
+# 分析対象銘柄数の上限（環境変数で制御可能）
+# 0 = 全銘柄（デフォルト）、正の整数 = その数まで制限
+# GitHub Actions で制限したい場合: MAX_STOCKS=1200 を設定
+MAX_STOCKS_FOR_DOWNLOAD = int(os.environ.get("MAX_STOCKS", "0"))
 
 
 @dataclass

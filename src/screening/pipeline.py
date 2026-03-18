@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -25,6 +27,11 @@ from src.indicators.technical import (
 )
 from src.utils.logging_config import logger
 
+# テクニカル分析の並列ワーカー数（環境変数で制御可能）
+# 0 = CPUコア数自動検出、正の整数 = その数
+_WORKERS_ENV = int(os.environ.get("ANALYSIS_WORKERS", "0"))
+ANALYSIS_WORKERS = _WORKERS_ENV if _WORKERS_ENV > 0 else min(os.cpu_count() or 4, 8)
+
 
 @dataclass
 class CandidateStock:
@@ -45,6 +52,57 @@ class ScreeningResult:
 
     buy: list[CandidateStock] = field(default_factory=list)
     sell: list[CandidateStock] = field(default_factory=list)
+
+
+def _analyze_single_stock(args: tuple) -> dict | None:
+    """単一銘柄のテクニカル分析（並列ワーカー用トップレベル関数）
+
+    ProcessPoolExecutor はトップレベル関数のみピクル可能なため、
+    クラスメソッドではなくモジュールレベルに配置する。
+    """
+    code, prices_values, adx_min = args
+
+    try:
+        stock_prices = pd.DataFrame(prices_values)
+        if len(stock_prices) < 50:
+            return None
+
+        stock_prices = stock_prices.reset_index(drop=True)
+
+        # テクニカル指標計算
+        stock_prices = calculate_all_indicators(stock_prices)
+        if len(stock_prices) < 30:
+            return None
+
+        last = stock_prices.iloc[-1]
+
+        # ADXチェック
+        if "ADX" in stock_prices.columns:
+            adx_val = last.get("ADX", 0)
+            if pd.notna(adx_val) and adx_val < adx_min:
+                return None
+
+        # シグナル検出
+        signals = get_all_signals(stock_prices)
+        if not signals:
+            return None
+
+        buy_count, sell_count = count_buy_sell_signals(signals)
+        if buy_count == 0 and sell_count == 0:
+            return None
+
+        close = float(last.get("Close", 0))
+
+        return {
+            "code": code,
+            "close": close,
+            "signals": signals,
+            "buy_count": buy_count,
+            "sell_count": sell_count,
+            "prices_df": stock_prices,
+        }
+    except (KeyError, ValueError, TypeError):
+        return None
 
 
 class ScreeningPipeline:
@@ -157,84 +215,58 @@ class ScreeningPipeline:
             for _, row in stocks_info[["Code", "CompanyName"]].dropna().iterrows():
                 name_map[row["Code"]] = row.get("CompanyName", "")
 
-        candidates = []
-        total = len(liquid_codes)
+        # 分析タスクを構築（データ不足の銘柄は事前除外）
+        tasks = []
         skipped_short = 0
-        skipped_adx = 0
-        skipped_signal = 0
-
-        for i, code in enumerate(liquid_codes):
-            # 進捗ログ（200銘柄ごと）
-            if i > 0 and i % 200 == 0:
-                elapsed = time.time() - t0
-                logger.info(
-                    f"  テクニカル分析中... {i}/{total} "
-                    f"(候補{len(candidates)}件, {elapsed:.0f}s)"
-                )
-
-            stock_prices = prices_by_code.get(code)
-            if stock_prices is None or len(stock_prices) < 50:
+        for code in liquid_codes:
+            prices_df = prices_by_code.get(code)
+            if prices_df is None or len(prices_df) < 50:
                 skipped_short += 1
                 continue
+            tasks.append((code, prices_df.to_dict("list"), ADX_MIN))
 
-            stock_prices = stock_prices.reset_index(drop=True)
+        total = len(tasks)
+        logger.info(
+            f"  テクニカル分析開始: {total}銘柄 "
+            f"(ワーカー{ANALYSIS_WORKERS}並列, データ不足スキップ={skipped_short})"
+        )
 
-            # テクニカル指標を1回だけ計算（Layer 2+3 共有）
-            try:
-                stock_prices = calculate_all_indicators(stock_prices)
-            except (KeyError, ValueError, TypeError) as e:
-                logger.debug(f"テクニカル指標計算失敗 ({code}): {e}")
-                continue
+        # --- 並列テクニカル分析 ---
+        candidates = []
+        done_count = 0
 
-            if len(stock_prices) < 30:
-                skipped_short += 1
-                continue
+        with ProcessPoolExecutor(max_workers=ANALYSIS_WORKERS) as executor:
+            futures = {
+                executor.submit(_analyze_single_stock, task): task[0]
+                for task in tasks
+            }
+            for future in as_completed(futures):
+                done_count += 1
+                if done_count % 200 == 0:
+                    elapsed = time.time() - t0
+                    logger.info(
+                        f"  テクニカル分析中... {done_count}/{total} "
+                        f"(候補{len(candidates)}件, {elapsed:.0f}s)"
+                    )
 
-            last = stock_prices.iloc[-1]
-
-            # --- Layer 2 チェック: ADX（トレンド存在確認）---
-            if "ADX" in stock_prices.columns:
-                adx_val = last.get("ADX", 0)
-                if pd.notna(adx_val) and adx_val < ADX_MIN:
-                    skipped_adx += 1
+                result = future.result()
+                if result is None:
                     continue
 
-            # --- Layer 3 チェック: エントリーシグナル ---
-            try:
-                signals = get_all_signals(stock_prices)
-            except (KeyError, ValueError, TypeError) as e:
-                logger.debug(f"シグナル検出失敗 ({code}): {e}")
-                continue
-
-            if not signals:
-                skipped_signal += 1
-                continue
-
-            buy_count, sell_count = count_buy_sell_signals(signals)
-
-            # 少なくとも1つの買い/売りシグナルが必要
-            if buy_count == 0 and sell_count == 0:
-                skipped_signal += 1
-                continue
-
-            # 銘柄名取得（事前構築した辞書から O(1) で取得）
-            name = name_map.get(code, "")
-
-            close = stock_prices["Close"].iloc[-1] if "Close" in stock_prices.columns else 0.0
-
-            candidates.append(CandidateStock(
-                code=code,
-                name=name or code,
-                close=close,
-                signals=signals,
-                buy_signal_count=buy_count,
-                sell_signal_count=sell_count,
-                prices_df=stock_prices,
-            ))
+                name = name_map.get(result["code"], "")
+                candidates.append(CandidateStock(
+                    code=result["code"],
+                    name=name or result["code"],
+                    close=result["close"],
+                    signals=result["signals"],
+                    buy_signal_count=result["buy_count"],
+                    sell_signal_count=result["sell_count"],
+                    prices_df=result["prices_df"],
+                ))
 
         logger.info(
-            f"  統計: データ不足={skipped_short}, ADXフィルタ={skipped_adx}, "
-            f"シグナルなし={skipped_signal}, 候補={len(candidates)}"
+            f"  統計: データ不足={skipped_short}, "
+            f"分析済={total}, 候補={len(candidates)}"
         )
 
         return candidates
