@@ -31,12 +31,21 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run backtest
+      - name: Run backtest (全銘柄)
         run: python backtest_3days.py
         env:
+          MAX_STOCKS: "0"
+          ANALYSIS_WORKERS: "2"
           JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           CUTOFF_DATE: ${{ inputs.cutoff_date }}
           CHECK_DATE: ${{ inputs.check_date }}
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\": \"Backtest FAILED: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+            "${{ secrets.DISCORD_WEBHOOK_URL }}"

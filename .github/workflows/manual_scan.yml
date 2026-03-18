@@ -32,9 +32,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run stock scan
-        run: python -m src.main
+      - name: Run stock scan (全銘柄)
+        run: python -m src.main --channel all
         env:
+          MAX_STOCKS: "0"
+          ANALYSIS_WORKERS: "2"
           JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
@@ -42,3 +44,10 @@ jobs:
           LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           LOG_LEVEL: ${{ inputs.log_level }}
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\": \"Manual Scan FAILED: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+            "${{ secrets.DISCORD_WEBHOOK_URL }}"

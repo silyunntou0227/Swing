@@ -25,11 +25,21 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run scan and send LINE notification
+      - name: Run scan and send LINE notification (全銘柄)
         run: python -m src.main --channel line
         env:
+          MAX_STOCKS: "0"
+          ANALYSIS_WORKERS: "2"
           JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\": \"Morning LINE FAILED: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+            "${{ secrets.DISCORD_WEBHOOK_URL }}"
