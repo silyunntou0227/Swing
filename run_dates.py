@@ -192,17 +192,23 @@ def download_all_prices(codes: list[str], start: str, end: str) -> pd.DataFrame:
     if not all_frames:
         return pd.DataFrame()
 
-    # 各フレームの Date を結合前にナイーブ化
+    # 各フレームの Date を結合前にナイーブ化（全パターン対応）
     for idx, frame in enumerate(all_frames):
         col = frame["Date"]
-        if hasattr(col.dtype, "tz") and col.dtype.tz is not None:
-            all_frames[idx] = frame.assign(Date=col.dt.tz_localize(None))
-        elif col.dtype == "object":
-            converted = pd.to_datetime(col, utc=True)
-            all_frames[idx] = frame.assign(Date=converted.dt.tz_localize(None))
+        try:
+            # まず UTC 変換してから tz 除去（最も安全）
+            converted = pd.to_datetime(col, utc=True).dt.tz_localize(None)
+            all_frames[idx] = frame.assign(Date=converted)
+        except Exception:
+            try:
+                if hasattr(col.dtype, "tz") and col.dtype.tz is not None:
+                    all_frames[idx] = frame.assign(Date=col.dt.tz_localize(None))
+            except Exception:
+                pass
 
     prices = pd.concat(all_frames, ignore_index=True)
-    prices["Date"] = pd.to_datetime(prices["Date"])
+    # concat 後も念のため UTC 変換
+    prices["Date"] = pd.to_datetime(prices["Date"], utc=True).dt.tz_localize(None)
     prices["Code"] = prices["Code"].astype(str).str[:4]
     prices = prices.sort_values(["Code", "Date"]).reset_index(drop=True)
     print(f"  最終結果: {prices['Code'].nunique()}銘柄, {len(prices)}行")
