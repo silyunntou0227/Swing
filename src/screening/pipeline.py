@@ -14,6 +14,8 @@ from src.config import (
     EXCLUDE_CATEGORIES,
     MIN_LISTING_DAYS,
     ADX_MIN,
+    ATR_RANGE_FILTER_MIN,
+    ATR_RANGE_FILTER_MAX,
     SIGNAL_LOOKBACK_DAYS,
 )
 from src.data.data_loader import MarketData
@@ -81,6 +83,19 @@ def _analyze_single_stock(args: tuple) -> dict | None:
             adx_val = last.get("ADX", 0)
             if pd.notna(adx_val) and adx_val < adx_min:
                 return None
+
+        # レンジ相場フィルタ: ATR/Close比率でチョップゾーン・過剰ボラを除外
+        close_val = float(last.get("Close", 0))
+        atr_val = float(last.get("ATR", 0)) if "ATR" in stock_prices.columns else 0
+        if close_val > 0 and atr_val > 0:
+            atr_ratio = atr_val / close_val
+            if atr_ratio < ATR_RANGE_FILTER_MIN or atr_ratio > ATR_RANGE_FILTER_MAX:
+                return None
+
+        # 出来高フィルタ: 直近出来高が20日平均以上を必須化
+        vol_ratio = float(last.get("VolumeRatio", 1.0)) if "VolumeRatio" in stock_prices.columns else 1.0
+        if pd.notna(vol_ratio) and vol_ratio < 1.0:
+            return None
 
         # シグナル検出
         signals = get_all_signals(stock_prices)
@@ -284,10 +299,14 @@ class ScreeningPipeline:
             if self._news_filter.should_exclude(candidate.code, market_data):
                 continue
 
-            # 買い/売り判定
-            if candidate.buy_signal_count > candidate.sell_signal_count:
+            # 買い/売り判定（信号矛盾フィルタ付き）
+            # 単純多数決ではなく、優勢側が逆側の2倍以上のシグナルを持つ場合のみ採用
+            # これにより平均回帰とモメンタムの矛盾する信号で誤方向エントリーを防ぐ
+            buy_c = candidate.buy_signal_count
+            sell_c = candidate.sell_signal_count
+            if buy_c >= 2 and buy_c >= sell_c * 2:
                 result.buy.append(candidate)
-            elif candidate.sell_signal_count > candidate.buy_signal_count:
+            elif sell_c >= 2 and sell_c >= buy_c * 2:
                 result.sell.append(candidate)
 
         return result
