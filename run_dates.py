@@ -1,4 +1,7 @@
-"""指定日付のおすすめ銘柄スクリーニング"""
+"""指定日付のおすすめ銘柄スクリーニング
+
+yfinance の一括ダウンロードが失敗する場合は個別ダウンロードにフォールバック。
+"""
 from __future__ import annotations
 
 import sys
@@ -36,12 +39,12 @@ MAJOR_CODES = [
     "8697", "8750", "8795", "9001", "9005", "9007", "9008", "9064", "9101", "9104",
     "9107", "9201", "9202", "9301", "9434", "9501", "9502", "9503", "9531", "9532",
     "9602", "9613", "9735", "9766", "4528", "3659", "2432", "6988", "3289", "2127",
-    "6305", "2768", "8697", "4385", "6532", "7832", "3088", "2587", "6586", "3769",
+    "6305", "2768", "4385", "6532", "3088", "2587", "6586", "3769",
     # 中型 — 流動性高め
-    "2929", "3665", "4385", "6532", "3697", "7342", "4477", "6200", "3923", "4485",
-    "6035", "7816", "2158", "3064", "4751", "6526", "3436", "6146", "7741", "9449",
-    "2181", "4716", "6448", "7272", "3116", "4248", "6966", "8698", "9143", "3141",
-    "4776", "6460", "7729", "8136", "9602", "3626", "4565", "6588", "7747", "8154",
+    "2929", "3665", "3697", "7342", "4477", "6200", "3923", "4485",
+    "6035", "7816", "2158", "3064", "4751", "6526", "3436", "6146", "9449",
+    "2181", "4716", "6448", "3116", "4248", "6966", "8698", "9143", "3141",
+    "4776", "6460", "7729", "8136", "3626", "4565", "6588", "7747", "8154",
 ]
 
 TARGET_DATES = [
@@ -65,23 +68,61 @@ def adjust_to_trading_day(d: date) -> date:
     return d
 
 
+def download_single_stock(code: str, start: str, end: str) -> pd.DataFrame | None:
+    """個別銘柄の株価をダウンロード（フォールバック用）"""
+    ticker = f"{code}.T"
+    for attempt in range(3):
+        try:
+            t = yf.Ticker(ticker)
+            hist = t.history(start=start, end=end, auto_adjust=True)
+            if hist.empty:
+                return None
+            hist = hist.reset_index()
+            hist["Code"] = code
+            # カラム名の正規化
+            if "Date" not in hist.columns:
+                for col in hist.columns:
+                    if "date" in str(col).lower() or isinstance(hist[col].iloc[0], pd.Timestamp):
+                        hist = hist.rename(columns={col: "Date"})
+                        break
+            cols = ["Date", "Open", "High", "Low", "Close", "Volume", "Code"]
+            available = [c for c in cols if c in hist.columns]
+            if "Close" not in available:
+                return None
+            return hist[available].dropna(subset=["Close"])
+        except Exception:
+            if attempt < 2:
+                time.sleep(1 * (attempt + 1))
+            continue
+    return None
+
+
 def download_all_prices(codes: list[str], start: str, end: str) -> pd.DataFrame:
-    """全銘柄の株価を一括ダウンロード"""
+    """全銘柄の株価をダウンロード（一括 → 個別フォールバック）"""
     tickers = [f"{c}.T" for c in codes]
-    chunk_size = 200
     all_frames = []
+    failed_codes = []
+
+    # まず一括ダウンロードを試行
+    print("  [方式1] 一括ダウンロード試行中...")
+    chunk_size = 50  # 小さいチャンクで試行
+    bulk_success = 0
 
     for i in range(0, len(tickers), chunk_size):
         chunk = tickers[i:i+chunk_size]
-        print(f"  DL: chunk {i//chunk_size+1}/{(len(tickers)-1)//chunk_size+1} ({len(chunk)}銘柄)")
+        chunk_codes = codes[i:i+chunk_size]
+        print(f"    chunk {i//chunk_size+1}/{(len(tickers)-1)//chunk_size+1} ({len(chunk)}銘柄)...", end="", flush=True)
         try:
             data = yf.download(
                 chunk, start=start, end=end,
                 auto_adjust=True, threads=True, progress=False,
             )
             if data.empty:
+                failed_codes.extend(chunk_codes)
+                print(" 空データ")
                 continue
 
+            chunk_success = 0
             if isinstance(data.columns, pd.MultiIndex):
                 for ticker in chunk:
                     code = ticker.replace(".T", "")
@@ -89,43 +130,82 @@ def download_all_prices(codes: list[str], start: str, end: str) -> pd.DataFrame:
                         df_single = data.xs(ticker, level=1, axis=1).copy()
                         df_single = df_single.reset_index()
                         df_single["Code"] = code
-                        df_single = df_single.rename(columns={"index": "Date"})
+                        # Date カラムの検出
                         if "Date" not in df_single.columns:
-                            df_single = df_single.reset_index()
-                            if "Date" not in df_single.columns:
-                                for col in df_single.columns:
-                                    if "date" in str(col).lower():
-                                        df_single = df_single.rename(columns={col: "Date"})
-                                        break
+                            for col in df_single.columns:
+                                if "date" in str(col).lower():
+                                    df_single = df_single.rename(columns={col: "Date"})
+                                    break
+                            else:
+                                df_single = df_single.reset_index()
+                                if "Date" not in df_single.columns:
+                                    for col in df_single.columns:
+                                        if "date" in str(col).lower():
+                                            df_single = df_single.rename(columns={col: "Date"})
+                                            break
                         if not df_single.empty and "Close" in df_single.columns:
-                            all_frames.append(
-                                df_single[["Date", "Open", "High", "Low", "Close", "Volume", "Code"]]
-                                .dropna(subset=["Close"])
-                            )
+                            frame = df_single[["Date", "Open", "High", "Low", "Close", "Volume", "Code"]].dropna(subset=["Close"])
+                            if not frame.empty:
+                                all_frames.append(frame)
+                                chunk_success += 1
+                                continue
+                        failed_codes.append(code)
                     except (KeyError, TypeError):
-                        continue
-            else:
+                        failed_codes.append(code)
+            elif len(chunk) == 1:
                 data = data.reset_index()
-                if len(chunk) == 1:
-                    data["Code"] = chunk[0].replace(".T", "")
-                    if "Close" in data.columns:
-                        all_frames.append(
-                            data[["Date", "Open", "High", "Low", "Close", "Volume", "Code"]]
-                            .dropna(subset=["Close"])
-                        )
+                data["Code"] = chunk[0].replace(".T", "")
+                if "Close" in data.columns:
+                    frame = data[["Date", "Open", "High", "Low", "Close", "Volume", "Code"]].dropna(subset=["Close"])
+                    if not frame.empty:
+                        all_frames.append(frame)
+                        chunk_success = 1
+                    else:
+                        failed_codes.extend(chunk_codes)
+                else:
+                    failed_codes.extend(chunk_codes)
+
+            bulk_success += chunk_success
+            print(f" {chunk_success}/{len(chunk)}成功")
         except Exception as e:
-            print(f"    chunk error: {e}")
+            failed_codes.extend(chunk_codes)
+            print(f" エラー: {type(e).__name__}")
             continue
-        time.sleep(1)
+        time.sleep(0.5)
+
+    print(f"  一括DL結果: {bulk_success}銘柄成功, {len(failed_codes)}銘柄失敗")
+
+    # 失敗した銘柄を個別ダウンロード
+    if failed_codes:
+        print(f"\n  [方式2] 個別ダウンロード ({len(failed_codes)}銘柄)...")
+        individual_success = 0
+        for j, code in enumerate(failed_codes):
+            if (j + 1) % 20 == 0 or j == 0:
+                print(f"    {j+1}/{len(failed_codes)}...", flush=True)
+            df = download_single_stock(code, start, end)
+            if df is not None and not df.empty:
+                all_frames.append(df)
+                individual_success += 1
+            time.sleep(0.3)  # レート制限対策
+        print(f"  個別DL結果: {individual_success}/{len(failed_codes)}成功")
 
     if not all_frames:
         return pd.DataFrame()
 
     prices = pd.concat(all_frames, ignore_index=True)
-    prices["Date"] = pd.to_datetime(prices["Date"], utc=True).dt.tz_localize(None)
+    # Date の正規化
+    if prices["Date"].dtype == "object":
+        prices["Date"] = pd.to_datetime(prices["Date"])
+    if prices["Date"].dt.tz is not None:
+        prices["Date"] = prices["Date"].dt.tz_localize(None)
+    else:
+        try:
+            prices["Date"] = pd.to_datetime(prices["Date"], utc=True).dt.tz_localize(None)
+        except Exception:
+            pass
     prices["Code"] = prices["Code"].astype(str).str[:4]
     prices = prices.sort_values(["Code", "Date"]).reset_index(drop=True)
-    print(f"  完了: {prices['Code'].nunique()}銘柄, {len(prices)}行")
+    print(f"  最終結果: {prices['Code'].nunique()}銘柄, {len(prices)}行")
     return prices
 
 
@@ -140,7 +220,7 @@ def run_for_date(
         (all_prices["Date"] >= start_dt) & (all_prices["Date"] <= cutoff_dt)
     ].copy()
 
-    if prices_before.empty or prices_before["Code"].nunique() < 50:
+    if prices_before.empty or prices_before["Code"].nunique() < 10:
         print(f"  データ不足: {prices_before['Code'].nunique() if not prices_before.empty else 0}銘柄")
         return []
 
@@ -156,6 +236,10 @@ def run_for_date(
         candidates = pipeline.run(market_data)
     except Exception as e:
         print(f"  スクリーニングエラー: {e}")
+        return []
+
+    if not candidates.buy:
+        print("  買い候補なし")
         return []
 
     try:
@@ -210,7 +294,7 @@ def main():
     # 全期間の株価を一括ダウンロード
     earliest = min(adjusted) - timedelta(days=500)
     latest = max(adjusted) + timedelta(days=1)
-    print(f"\n[2/3] 株価データ一括ダウンロード ({earliest} ~ {latest})...")
+    print(f"\n[2/3] 株価データダウンロード ({earliest} ~ {latest})...")
     all_prices = download_all_prices(
         codes,
         start=earliest.isoformat(),
@@ -258,10 +342,18 @@ def main():
             print()
             print(f"  【出口戦略】")
             print(f"    戦略: {c.exit_strategy or 'N/A'}")
-            print(f"    損切り(SL): ¥{c.stop_loss:,.0f}" if c.stop_loss else "    損切り: N/A")
-            print(f"    利確(TP): ¥{c.take_profit:,.0f}" if c.take_profit else "    利確: N/A")
-            print(f"    部分利確: ¥{c.partial_exit_price:,.0f}" if c.partial_exit_price else "")
-            print(f"    トレーリングストップ: ¥{c.trailing_stop_price:,.0f}" if c.trailing_stop_price else "")
+            if c.stop_loss:
+                print(f"    損切り(SL): ¥{c.stop_loss:,.0f}")
+            else:
+                print(f"    損切り: N/A")
+            if c.take_profit:
+                print(f"    利確(TP): ¥{c.take_profit:,.0f}")
+            else:
+                print(f"    利確: N/A")
+            if c.partial_exit_price:
+                print(f"    部分利確: ¥{c.partial_exit_price:,.0f}")
+            if c.trailing_stop_price:
+                print(f"    トレーリングストップ: ¥{c.trailing_stop_price:,.0f}")
             if c.risk_reward_ratio:
                 print(f"    R/R比率: 1:{c.risk_reward_ratio:.1f}")
             if c.position_size_shares:
