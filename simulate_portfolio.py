@@ -23,7 +23,7 @@ from src.screening.pipeline import ScreeningPipeline
 from src.utils.logging_config import logger
 
 INITIAL_CAPITAL = 1_000_000  # 初期資金100万円
-TOP_N = 3  # 各日付の購入銘柄数
+TOP_N = 2  # 各日付の購入銘柄数（高確信度に集中）
 RANDOM_SEED = 42  # 日付選択のシード
 
 
@@ -136,8 +136,8 @@ def simulate_single_date(
         print(f"    データ不足 — スキップ")
         return trades, capital
 
-    # 市場トレンドフィルタ: 複数大型株のSMA50で市場全体の方向を判定
-    # 多数決方式: 過半数がSMA50を上回っていれば上昇トレンド
+    # 市場トレンドフィルタ: 複数大型株のSMA20で市場全体の方向を判定
+    # 多数決方式: 過半数がSMA20を上回っていれば上昇トレンド（SMA50→20: 短期反応改善）
     from src.config import MARKET_TREND_FILTER_ENABLED
     if MARKET_TREND_FILTER_ENABLED:
         market_proxies = ["7203", "8306", "6758", "9984", "6861"]  # トヨタ,三菱UFJ,ソニー,SBG,キーエンス
@@ -145,14 +145,14 @@ def simulate_single_date(
         checked = 0
         for proxy_code in market_proxies:
             proxy_data = prices_before[prices_before["Code"] == proxy_code]
-            if not proxy_data.empty and len(proxy_data) >= 50:
-                sma50 = proxy_data["Close"].rolling(50).mean().iloc[-1]
+            if not proxy_data.empty and len(proxy_data) >= 20:
+                sma20 = proxy_data["Close"].rolling(20).mean().iloc[-1]
                 last_close = proxy_data["Close"].iloc[-1]
                 checked += 1
-                if pd.notna(sma50) and last_close >= sma50:
+                if pd.notna(sma20) and last_close >= sma20:
                     above_count += 1
         if checked >= 3 and above_count < checked / 2:
-            print(f"    市場下降トレンド（大型株SMA50: {above_count}/{checked}超）— スキップ")
+            print(f"    市場下降トレンド（大型株SMA20: {above_count}/{checked}超）— スキップ")
             return trades, capital
 
     market_data = MarketData(
@@ -201,7 +201,28 @@ def simulate_single_date(
             print(f"    市場幅不足（SMA200超: {sma200_above_count}/{sma200_total} = {breadth:.0%}）— スキップ")
             return trades, capital
 
-    top_buy = sorted(sma200_filtered, key=lambda x: x.total_score, reverse=True)[:TOP_N]
+    # 対TOPIX相対強度フィルタ: 市場平均を下回る銘柄を除外
+    # Levy(1968)研究: 過去60日で市場をアウトパフォームした銘柄は継続しやすい
+    rs_filtered = []
+    market_proxy_codes = ["7203", "8306", "6758", "9984", "6861"]
+    market_returns = []
+    for pc in market_proxy_codes:
+        pd_proxy = prices_before[prices_before["Code"] == pc]
+        if not pd_proxy.empty and len(pd_proxy) >= 60:
+            ret = pd_proxy["Close"].iloc[-1] / pd_proxy["Close"].iloc[-60] - 1
+            market_returns.append(ret)
+    market_avg_return = sum(market_returns) / len(market_returns) if market_returns else 0
+
+    for c in sma200_filtered:
+        stock_prices = prices_before[prices_before["Code"] == c.code]
+        if not stock_prices.empty and len(stock_prices) >= 60:
+            stock_ret = stock_prices["Close"].iloc[-1] / stock_prices["Close"].iloc[-60] - 1
+            # 市場平均より著しく劣後する銘柄のみ除外（-10%以上の差）
+            if stock_ret < market_avg_return - 0.10:
+                continue
+        rs_filtered.append(c)
+
+    top_buy = sorted(rs_filtered, key=lambda x: x.total_score, reverse=True)[:TOP_N]
     # 最低スコア閾値: 低スコア銘柄は除外（無理に埋めない）
     MIN_SCORE_THRESHOLD = 62.0
     top_buy = [c for c in top_buy if c.total_score >= MIN_SCORE_THRESHOLD]
@@ -242,11 +263,29 @@ def simulate_single_date(
         # 売却: 保有中に日足High/LowでSL/TP判定 → 未達なら推奨日数後に決済
         from src.config import SL_TP_ENABLED
         hold_days = c.recommended_hold_days if c.recommended_hold_days > 0 else 5
-        sl = c.stop_loss if SL_TP_ENABLED else 0
-        tp = c.take_profit if SL_TP_ENABLED else 0
-        # -7%の最大損失キャップ（平均回帰に余裕を残しつつ大損失を防止）
-        sl = entry_price * 0.93
-        tp = 0  # TPも無効化（時間ベース出口で利益は十分捕捉可能）
+
+        # ATRベース動的SL/TP（固定-7%より適応的）
+        stock_prices_for_atr = prices_before[prices_before["Code"] == c.code]
+        atr_val = 0
+        if not stock_prices_for_atr.empty and len(stock_prices_for_atr) >= 14:
+            highs = stock_prices_for_atr["High"].tail(15)
+            lows = stock_prices_for_atr["Low"].tail(15)
+            closes = stock_prices_for_atr["Close"].tail(15)
+            tr = pd.concat([
+                highs - lows,
+                (highs - closes.shift(1)).abs(),
+                (lows - closes.shift(1)).abs()
+            ], axis=1).max(axis=1)
+            atr_val = tr.tail(14).mean()
+
+        if atr_val > 0 and SL_TP_ENABLED:
+            sl = entry_price - atr_val * 2.0   # ATR×2: 平均回帰に余裕
+            tp = entry_price + atr_val * 2.5   # ATR×2.5: 利確を近く（R:R=1.25）
+            # 最大損失キャップ -8%（ATRが大きすぎる場合の安全弁）
+            sl = max(sl, entry_price * 0.92)
+        else:
+            sl = entry_price * 0.93
+            tp = 0
         after_data = all_prices[
             (all_prices["Code"] == c.code)
             & (all_prices["Date"] > cutoff_dt)

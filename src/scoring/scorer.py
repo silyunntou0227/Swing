@@ -84,6 +84,50 @@ class MultiFactorScorer:
             except (KeyError, ValueError, TypeError, ZeroDivisionError) as e:
                 logger.warning(f"スコアリング失敗 ({candidate.code}): {type(e).__name__}: {e}")
 
+        # クロスセクショナルランク正規化: 一時無効化（A/Bテスト）
+        # if len(scored) >= 5:
+        #     scored = self._cross_sectional_normalize(scored)
+
+        return scored
+
+    def _cross_sectional_normalize(self, scored: list) -> list:
+        """クロスセクショナルランク正規化
+
+        各サブスコアを候補群内でのパーセンタイルランクに変換し、
+        因子間の有効レンジ差を解消する（Deutsche Bank研究に基づく）。
+        """
+        factor_names = [
+            "trend_score", "macd_score", "volume_score", "fundamental_score",
+            "rsi_score", "ichimoku_score", "pattern_score", "risk_reward_score",
+        ]
+
+        for factor in factor_names:
+            values = [getattr(sc, factor, 50.0) for sc in scored]
+            if len(set(values)) <= 1:
+                continue  # 全員同じスコアならスキップ
+            series = pd.Series(values)
+            ranks = series.rank(pct=True) * 100  # 0-100のパーセンタイルに変換
+            for sc, rank_val in zip(scored, ranks):
+                setattr(sc, factor, rank_val)
+
+        # ランク正規化後にtotal_scoreを再計算
+        w = self._weights
+        for sc in scored:
+            base_score = (
+                sc.trend_score * w.trend
+                + sc.macd_score * w.macd
+                + sc.volume_score * w.volume
+                + sc.fundamental_score * w.fundamental
+                + sc.rsi_score * w.rsi
+                + sc.ichimoku_score * w.ichimoku
+                + sc.pattern_score * w.pattern
+                + sc.risk_reward_score * w.risk_reward
+                + sc.news_score * w.news_disclosure
+                + sc.margin_score * w.margin_supply
+                + sc.sector_score * w.sector
+            )
+            sc.total_score = max(0, min(100, base_score + sc.macro_adjustment))
+
         return scored
 
     def _score_single(
@@ -259,7 +303,11 @@ class MultiFactorScorer:
         return min(100, max(0, score))
 
     def _calc_volume_score(self, df: pd.DataFrame, last: pd.Series) -> float:
-        """出来高スコア（0-100）"""
+        """出来高品質スコア（0-100）
+
+        単純な出来高比率だけでなく、ブレイクアウト前の出来高収縮パターンと
+        価格-出来高の整合性を評価する（Bulkowski研究に基づく）。
+        """
         score = 50.0
 
         vol_ratio = last.get("VolumeRatio")
@@ -271,6 +319,12 @@ class MultiFactorScorer:
             elif vol_ratio > VOLUME_SCORE_LOW:
                 score += 10
 
+        # ブレイクアウト前の出来高収縮パターン（5日間の平均が低い→本物のブレイク）
+        if "VolumeRatio" in df.columns and len(df) >= 6:
+            pre_vol = df["VolumeRatio"].iloc[-6:-1].mean()
+            if pd.notna(pre_vol) and pre_vol < 0.9:
+                score += 12  # 静かな蓄積期からのブレイク
+
         # OBVトレンド
         if "OBV" in df.columns and len(df) >= 10:
             obv_recent = df["OBV"].tail(10)
@@ -278,6 +332,12 @@ class MultiFactorScorer:
                 score += 10
             elif obv_recent.iloc[-1] > obv_recent.iloc[0]:
                 score += 5
+
+        # 価格-出来高ダイバージェンスペナルティ
+        if len(df) >= 2 and pd.notna(vol_ratio):
+            price_up = df["Close"].iloc[-1] > df["Close"].iloc[-2]
+            if price_up and vol_ratio < 0.8:
+                score -= 8  # 出来高減少中の値上がり = 疑わしい
 
         return min(100, max(0, score))
 
