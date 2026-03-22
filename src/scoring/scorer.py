@@ -129,8 +129,8 @@ class MultiFactorScorer:
         sc.pbr = fund_details.get("pbr")
         sc.roe = fund_details.get("roe")
 
-        # === 5. RSIスコア ===
-        sc.rsi_score = self._calc_rsi_score(last, direction)
+        # === 5. RSIスコア（連続下落日数考慮）===
+        sc.rsi_score = self._calc_rsi_score(last, direction, df)
 
         # === 6. 一目均衡表スコア ===
         sc.ichimoku_score = self._calc_ichimoku_score(last, direction)
@@ -194,30 +194,40 @@ class MultiFactorScorer:
         return sc
 
     def _calc_trend_score(self, df: pd.DataFrame, last: pd.Series, direction: str) -> float:
-        """トレンドスコア（0-100）"""
+        """トレンドスコア（0-100）
+
+        日本市場では平均回帰が優位のため、トレンドスコアは
+        「買ってはいけない状況」の検出に重点を置く。
+        SMA200未満での買いは大きく減点。
+        """
         score = 50.0
 
-        # SMA配列
         sma5 = last.get("SMA_5")
         sma25 = last.get("SMA_25")
         sma75 = last.get("SMA_75")
+        sma200 = last.get("SMA_200")
         close = last.get("Close", 0)
 
         if pd.notna(sma5) and pd.notna(sma25):
             if direction == "buy":
                 if close > sma5 > sma25:
-                    score += 25
+                    score += 20
                     if pd.notna(sma75) and sma25 > sma75:
-                        score += 15  # パーフェクトオーダー
+                        score += 10  # パーフェクトオーダー（25+15→20+10に縮小）
                 elif close > sma5:
-                    score += 10
-            else:  # sell
+                    score += 8
+                # SMA200未満での買いは大幅減点
+                if pd.notna(sma200) and close < sma200:
+                    score -= 20
+            else:
                 if close < sma5 < sma25:
-                    score += 25
+                    score += 20
                     if pd.notna(sma75) and sma25 < sma75:
-                        score += 15
+                        score += 10
                 elif close < sma5:
-                    score += 10
+                    score += 8
+                if pd.notna(sma200) and close > sma200:
+                    score -= 15
 
         return min(100, max(0, score))
 
@@ -271,53 +281,81 @@ class MultiFactorScorer:
 
         return min(100, max(0, score))
 
-    def _calc_rsi_score(self, last: pd.Series, direction: str) -> float:
-        """RSIスコア（0-100）— RSI(14) + Connors RSI(2) 統合
+    def _calc_rsi_score(self, last: pd.Series, direction: str, df: pd.DataFrame = None) -> float:
+        """RSIスコア（0-100）— RSI(14) + Connors RSI(2) + SMA200ゲート
 
-        RSI(14): 中長期トレンド方向確認
-        RSI(2): 短期平均回帰エントリータイミング（Connors研究に基づく）
+        日本市場の平均回帰特性を活用:
+        - RSI(2) < 10 AND Close > SMA200 = 最高確率エントリー（Connors研究: 91%勝率）
+        - RSI(2)単独のシグナルはSMA200確認なしでも有効だが減点
+        - 連続下落日数で平均回帰の信頼度を強化
         """
         score = 50.0
         rsi14 = last.get("RSI")
         rsi2 = last.get("RSI_short")
+        close = last.get("Close", 0)
+        sma200 = last.get("SMA_200")
 
-        # --- RSI(14): トレンド方向の確認（ウェイト40%）---
+        # SMA200ゲート: 長期上昇トレンド内の押し目買いが最も有効
+        above_sma200 = pd.notna(sma200) and close > sma200
+
+        # --- RSI(14): トレンド方向の確認 ---
         if pd.notna(rsi14):
             if direction == "buy":
-                if 30 <= rsi14 <= 45:
-                    score += 12  # 売られすぎから回復
-                elif 45 < rsi14 <= 60:
-                    score += 6   # 中立〜やや強
+                if 30 <= rsi14 <= 50:
+                    score += 12  # 売られすぎから回復（上限60→50に引下げ）
+                elif 50 < rsi14 <= 60:
+                    score += 4   # 中立（6→4に減点）
                 elif rsi14 > 70:
-                    score -= 8   # 買われすぎ
+                    score -= 12  # 買われすぎ（-8→-12に強化）
             else:
                 if 55 <= rsi14 <= 70:
                     score += 12
                 elif rsi14 > 70:
                     score += 6
                 elif rsi14 < 30:
-                    score -= 8
+                    score -= 12
 
-        # --- RSI(2): 短期エントリータイミング（ウェイト60%）---
+        # --- RSI(2): 短期エントリータイミング + SMA200ゲート ---
         if pd.notna(rsi2):
             if direction == "buy":
                 if rsi2 < RSI2_EXTREME_OVERSOLD:
-                    score += 25   # 極端な売られすぎ = 最強シグナル
+                    # SMA200上: 最強シグナル（+35）、SMA200下: 弱シグナル（+10）
+                    score += 35 if above_sma200 else 10
                 elif rsi2 < RSI2_OVERSOLD:
-                    score += 18   # 売られすぎ = 強シグナル
+                    score += 25 if above_sma200 else 8
                 elif rsi2 < RSI2_MILD_OVERSOLD:
-                    score += 8    # やや売られすぎ
+                    score += 12 if above_sma200 else 4
                 elif rsi2 > RSI2_OVERBOUGHT:
-                    score -= 10   # 買われすぎ
+                    score -= 15  # 買われすぎペナルティ強化
+                elif rsi2 > 30:
+                    score -= 10  # 中立ゾーン: 平均回帰シグナルなし → ペナルティ
             else:
                 if rsi2 > RSI2_EXTREME_OVERBOUGHT:
-                    score += 25
+                    score += 35 if not above_sma200 else 10
                 elif rsi2 > RSI2_OVERBOUGHT:
-                    score += 18
+                    score += 25 if not above_sma200 else 8
                 elif rsi2 > RSI2_MILD_OVERBOUGHT:
-                    score += 8
+                    score += 12 if not above_sma200 else 4
                 elif rsi2 < RSI2_OVERSOLD:
-                    score -= 10
+                    score -= 15
+                elif rsi2 < 70:
+                    score -= 10  # 中立ゾーン: 平均回帰シグナルなし → ペナルティ
+
+        # --- 連続下落日数ボーナス（平均回帰の信頼度強化）---
+        if df is not None and len(df) >= 5 and direction == "buy":
+            closes = df["Close"].tail(6).values
+            consec_down = 0
+            for i in range(len(closes) - 1, 0, -1):
+                if closes[i] < closes[i - 1]:
+                    consec_down += 1
+                else:
+                    break
+            if consec_down >= 5:
+                score += 15
+            elif consec_down >= 4:
+                score += 12
+            elif consec_down >= 3:
+                score += 8
 
         return min(100, max(0, score))
 

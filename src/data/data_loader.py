@@ -130,6 +130,39 @@ class DataLoader:
 
         return data
 
+    def load_single_stock(self, codes: list[str]) -> MarketData:
+        """指定銘柄のみのデータを取得（個別銘柄分析用）
+
+        Args:
+            codes: 4桁の銘柄コードリスト（例: ["7203", "6758"]）
+
+        Returns:
+            対象銘柄のデータを含む MarketData
+        """
+        data = MarketData()
+        t0 = time.time()
+
+        logger.info(f"個別銘柄分析: {', '.join(codes)}")
+
+        # 銘柄一覧取得（銘柄名解決に必要）
+        data.stocks = self._load_stock_list()
+
+        # 株価データ取得（対象銘柄のみ）
+        data.prices = self._load_prices(codes)
+
+        # 補助データ（全て非致命的）
+        data.financials = self._load_financials()
+        data.disclosures = self._load_disclosures()
+        data.edinet_filings = self._load_edinet()
+        data.news = self._load_news()
+        data.macro_indicators = self._load_macro()
+        data.margin_data = pd.DataFrame()
+
+        elapsed = time.time() - t0
+        logger.info(f"個別銘柄データ取得完了（{elapsed:.0f}秒）")
+
+        return data
+
     def _load_stock_list(self) -> pd.DataFrame:
         """銘柄一覧取得（JPX公式CSV → J-Quantsフォールバック）"""
         # 主力: JPX公式CSV

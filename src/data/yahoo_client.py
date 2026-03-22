@@ -144,6 +144,7 @@ class YahooClient:
                     temp = temp.rename(columns={"index": "Date"})
                 temp["Code"] = code
                 temp = self._normalize_columns(temp)
+                temp = self._normalize_date_tz(temp)
                 if not temp.empty:
                     frames.append(temp)
             return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
@@ -197,6 +198,7 @@ class YahooClient:
 
                 sub["Code"] = code
                 sub = self._normalize_columns(sub)
+                sub = self._normalize_date_tz(sub)
 
                 if "Close" in sub.columns:
                     sub = sub.dropna(subset=["Close"])
@@ -224,10 +226,18 @@ class YahooClient:
             df = df.reset_index()
             df["Code"] = code
             df = self._normalize_columns(df)
+            df = self._normalize_date_tz(df)
             return df
         except Exception as e:
             logger.debug(f"Yahoo Finance: {code} 個別取得失敗: {e}")
             return pd.DataFrame()
+
+    @staticmethod
+    def _normalize_date_tz(df: pd.DataFrame) -> pd.DataFrame:
+        """Date列のタイムゾーンをnaiveに統一（concat前に呼ぶ）"""
+        if "Date" in df.columns and not df.empty:
+            df["Date"] = pd.to_datetime(df["Date"], utc=True).dt.tz_localize(None)
+        return df
 
     @staticmethod
     def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:

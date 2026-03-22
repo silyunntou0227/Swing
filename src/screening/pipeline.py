@@ -14,6 +14,11 @@ from src.config import (
     EXCLUDE_CATEGORIES,
     MIN_LISTING_DAYS,
     ADX_MIN,
+    ATR_RANGE_FILTER_ENABLED,
+    ATR_RANGE_FILTER_MIN,
+    ATR_RANGE_FILTER_MAX,
+    VOL_RATIO_FILTER_ENABLED,
+    SIGNAL_CONFLICT_FILTER_ENABLED,
     SIGNAL_LOOKBACK_DAYS,
 )
 from src.data.data_loader import MarketData
@@ -59,8 +64,16 @@ def _analyze_single_stock(args: tuple) -> dict | None:
 
     ProcessPoolExecutor はトップレベル関数のみピクル可能なため、
     クラスメソッドではなくモジュールレベルに配置する。
+    args: (code, prices_values, config_dict)
+      config_dict: {"adx_min", "atr_range_enabled", "atr_range_min",
+                     "atr_range_max", "vol_ratio_enabled"}
     """
-    code, prices_values, adx_min = args
+    code, prices_values, cfg = args
+    adx_min = cfg.get("adx_min", ADX_MIN)
+    atr_range_on = cfg.get("atr_range_enabled", ATR_RANGE_FILTER_ENABLED)
+    atr_min = cfg.get("atr_range_min", ATR_RANGE_FILTER_MIN)
+    atr_max = cfg.get("atr_range_max", ATR_RANGE_FILTER_MAX)
+    vol_ratio_on = cfg.get("vol_ratio_enabled", VOL_RATIO_FILTER_ENABLED)
 
     try:
         stock_prices = pd.DataFrame(prices_values)
@@ -80,6 +93,21 @@ def _analyze_single_stock(args: tuple) -> dict | None:
         if "ADX" in stock_prices.columns:
             adx_val = last.get("ADX", 0)
             if pd.notna(adx_val) and adx_val < adx_min:
+                return None
+
+        # レンジ相場フィルタ: ATR/Close比率でチョップゾーン・過剰ボラを除外
+        if atr_range_on:
+            close_val = float(last.get("Close", 0))
+            atr_val = float(last.get("ATR", 0)) if "ATR" in stock_prices.columns else 0
+            if close_val > 0 and atr_val > 0:
+                atr_ratio = atr_val / close_val
+                if atr_ratio < atr_min or atr_ratio > atr_max:
+                    return None
+
+        # 出来高フィルタ: 直近出来高が20日平均以上を必須化
+        if vol_ratio_on:
+            vol_ratio = float(last.get("VolumeRatio", 1.0)) if "VolumeRatio" in stock_prices.columns else 1.0
+            if pd.notna(vol_ratio) and vol_ratio < 1.0:
                 return None
 
         # シグナル検出
@@ -223,7 +251,14 @@ class ScreeningPipeline:
             if prices_df is None or len(prices_df) < 50:
                 skipped_short += 1
                 continue
-            tasks.append((code, prices_df.to_dict("list"), ADX_MIN))
+            worker_cfg = {
+                "adx_min": ADX_MIN,
+                "atr_range_enabled": ATR_RANGE_FILTER_ENABLED,
+                "atr_range_min": ATR_RANGE_FILTER_MIN,
+                "atr_range_max": ATR_RANGE_FILTER_MAX,
+                "vol_ratio_enabled": VOL_RATIO_FILTER_ENABLED,
+            }
+            tasks.append((code, prices_df.to_dict("list"), worker_cfg))
 
         total = len(tasks)
         logger.info(
@@ -284,10 +319,19 @@ class ScreeningPipeline:
             if self._news_filter.should_exclude(candidate.code, market_data):
                 continue
 
-            # 買い/売り判定
-            if candidate.buy_signal_count > candidate.sell_signal_count:
-                result.buy.append(candidate)
-            elif candidate.sell_signal_count > candidate.buy_signal_count:
-                result.sell.append(candidate)
+            buy_c = candidate.buy_signal_count
+            sell_c = candidate.sell_signal_count
+            if SIGNAL_CONFLICT_FILTER_ENABLED:
+                # 信号矛盾フィルタ: 優勢側が逆側の2倍以上 & 最低2シグナル
+                if buy_c >= 2 and buy_c >= sell_c * 2:
+                    result.buy.append(candidate)
+                elif sell_c >= 2 and sell_c >= buy_c * 2:
+                    result.sell.append(candidate)
+            else:
+                # 単純多数決
+                if buy_c > sell_c:
+                    result.buy.append(candidate)
+                elif sell_c > buy_c:
+                    result.sell.append(candidate)
 
         return result
