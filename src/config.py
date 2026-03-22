@@ -54,16 +54,21 @@ MARGIN_RATIO_MAX = 5.0  # 信用倍率上限
 # ============================================================
 ADX_MIN = 25.0  # 20→25: 研究に基づきトレンド確認精度向上
 # レンジ相場フィルタ（ATRが極端に小さい＝チョップゾーン）
+ATR_RANGE_FILTER_ENABLED = False  # A/Bテスト用トグル
 ATR_RANGE_FILTER_MIN = 0.008  # ATR/Close < 0.8% はレンジ相場とみなしスキップ
 ATR_RANGE_FILTER_MAX = 0.06   # ATR/Close > 6% は過剰ボラとみなしスキップ
+VOL_RATIO_FILTER_ENABLED = False  # 出来高比率フィルタ: 直近 >= 20日平均
+SL_TP_ENABLED = True  # SL/TP実行の有効化フラグ
+MARKET_TREND_FILTER_ENABLED = True  # 市場トレンドフィルタ（下げ相場で買わない）
+SIGNAL_CONFLICT_FILTER_ENABLED = False  # 信号矛盾フィルタ (2倍以上&最低2シグナル)
 VOLUME_AVG_MIN = 50000  # 20日平均出来高（株）
 TURNOVER_MIN = 50_000_000  # 売買代金（円/日）
 
 # ============================================================
 # エントリーシグナル（Layer 3）
 # ============================================================
-SIGNAL_LOOKBACK_DAYS = 1  # シグナル検出の遡り日数（3→1: 陳腐化信号排除）
-VOLUME_SPIKE_RATIO = 2.0  # 出来高急増の倍率（1.5→2.0: ダマシ削減）
+SIGNAL_LOOKBACK_DAYS = 3  # シグナル検出の遡り日数（3→1: 陳腐化信号排除）
+VOLUME_SPIKE_RATIO = 1.5  # 出来高急増の倍率
 
 # ============================================================
 # テクニカル指標パラメータ
@@ -160,7 +165,7 @@ ATR_RATIO_OPTIMAL_MAX = 0.04  # 最適ボラティリティ上限
 ATR_RATIO_EXCESSIVE = 0.06    # 過大ボラティリティ
 
 # 保有日数予測
-HOLD_DAYS_MEAN_REVERSION = 8  # 平均回帰シグナル（3→8: Connors RSI研究に基づく）
+HOLD_DAYS_MEAN_REVERSION = 5  # 平均回帰シグナル（3→5: 利益を伸ばす）
 HOLD_DAYS_BREAKOUT = 8        # ブレイクアウトシグナル
 HOLD_DAYS_MOMENTUM = 7        # モメンタムシグナル
 HOLD_DAYS_DEFAULT = 5         # その他
@@ -186,17 +191,17 @@ PARTIAL_EXIT_ATR_MULT = 1.5   # 部分利確: ATR×1.5（50%決済）
 # ボリューム系: 15%, ファンダ: 10%, その他: 15%
 @dataclass
 class ScoringWeights:
-    trend: float = 0.20       # 22→20: セクター追加に伴い再配分
-    macd: float = 0.14        # 15→14
-    volume: float = 0.11      # 12→11
+    trend: float = 0.12       # 20→12: 日本市場は平均回帰優位（研究に基づく）
+    macd: float = 0.08        # 14→8: モメンタム系を縮小
+    volume: float = 0.12      # 11→12: 出来高確認を重視
     fundamental: float = 0.10  # 据え置き
-    rsi: float = 0.10         # 据え置き
-    ichimoku: float = 0.12    # 13→12
+    rsi: float = 0.22         # 10→22: 平均回帰（RSI2）を最重視
+    ichimoku: float = 0.08    # 12→8: トレンド系を縮小
     pattern: float = 0.05     # 据え置き
-    risk_reward: float = 0.05  # 据え置き
+    risk_reward: float = 0.08  # 5→8: リスク管理を重視
     news_disclosure: float = 0.05  # 据え置き
-    margin_supply: float = 0.03    # 据え置き
-    sector: float = 0.05      # NEW: セクターローテーション分析
+    margin_supply: float = 0.05    # 3→5: 需給を重視
+    sector: float = 0.05      # セクターローテーション分析
 
     def validate(self) -> bool:
         total = sum([
@@ -254,8 +259,8 @@ def validate_config() -> list[str]:
 # ============================================================
 RISK_PER_TRADE = 0.01  # 1トレードあたりのリスク（総資金比）
 DEFAULT_CAPITAL = 1_000_000  # デフォルト運用資金（円）
-STOP_LOSS_ATR_MULTIPLIER = 3.0  # ATR × N で損切りライン（2.0→3.0: ノイズSL削減）
-TAKE_PROFIT_RR_RATIO = 2.0  # 最低R:R比率
+STOP_LOSS_ATR_MULTIPLIER = 2.0  # ATR × N で損切りライン
+TAKE_PROFIT_RR_RATIO = 3.0  # 最低R:R比率（2.0→3.0: 利益を伸ばす）
 BALSARA_WIN_RATE = 0.45  # デフォルト勝率（保守的）
 BALSARA_PAYOFF_RATIO = 2.0  # デフォルト損益比
 

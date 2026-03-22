@@ -139,8 +139,10 @@ def detect_stochastic_signals(df: pd.DataFrame) -> pd.DataFrame:
     prev_k = k.shift(1)
     prev_d = d.shift(1)
 
-    bull_cross = (prev_k < prev_d) & (k >= d) & (k < 20)
-    bear_cross = (prev_k > prev_d) & (k <= d) & (k > 80)
+    # 売られすぎゾーン(K<30)でのゴールデンクロス = 買い（K<20は厳しすぎ→30に拡大）
+    # 買われすぎゾーン(K>70)でのデッドクロス = 売り（K>80は厳しすぎ→70に拡大）
+    bull_cross = (prev_k < prev_d) & (k >= d) & (k < 30)
+    bear_cross = (prev_k > prev_d) & (k <= d) & (k > 70)
 
     lookback = SIGNAL_LOOKBACK_DAYS
     df["STOCH_bull_cross"] = (

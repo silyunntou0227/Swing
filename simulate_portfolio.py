@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import os
 import random
 import sys
 import time
@@ -23,7 +24,7 @@ from src.utils.logging_config import logger
 
 INITIAL_CAPITAL = 1_000_000  # 初期資金100万円
 TOP_N = 3  # 各日付の購入銘柄数
-RANDOM_SEED = 99  # 日付選択のシード（前回42、今回99で別日付）
+RANDOM_SEED = 42  # 日付選択のシード
 
 
 def generate_random_dates(n: int = 10, seed: int = RANDOM_SEED) -> list[date]:
@@ -135,6 +136,25 @@ def simulate_single_date(
         print(f"    データ不足 — スキップ")
         return trades, capital
 
+    # 市場トレンドフィルタ: 複数大型株のSMA50で市場全体の方向を判定
+    # 多数決方式: 過半数がSMA50を上回っていれば上昇トレンド
+    from src.config import MARKET_TREND_FILTER_ENABLED
+    if MARKET_TREND_FILTER_ENABLED:
+        market_proxies = ["7203", "8306", "6758", "9984", "6861"]  # トヨタ,三菱UFJ,ソニー,SBG,キーエンス
+        above_count = 0
+        checked = 0
+        for proxy_code in market_proxies:
+            proxy_data = prices_before[prices_before["Code"] == proxy_code]
+            if not proxy_data.empty and len(proxy_data) >= 50:
+                sma50 = proxy_data["Close"].rolling(50).mean().iloc[-1]
+                last_close = proxy_data["Close"].iloc[-1]
+                checked += 1
+                if pd.notna(sma50) and last_close >= sma50:
+                    above_count += 1
+        if checked >= 3 and above_count < checked / 2:
+            print(f"    市場下降トレンド（大型株SMA50: {above_count}/{checked}超）— スキップ")
+            return trades, capital
+
     market_data = MarketData(
         stocks=stocks, prices=prices_before,
         financials=pd.DataFrame(), scan_date=cutoff_date,
@@ -161,10 +181,33 @@ def simulate_single_date(
     for c in scored_buy:
         risk_calc.calculate(c, market_data)
 
-    top_buy = sorted(scored_buy, key=lambda x: x.total_score, reverse=True)[:TOP_N]
+    # SMA200フィルタ: 長期上昇トレンドの銘柄のみ（Connors研究に基づく）
+    sma200_filtered = []
+    sma200_above_count = 0
+    sma200_total = 0
+    for c in scored_buy:
+        stock_prices = prices_before[prices_before["Code"] == c.code]
+        if not stock_prices.empty and len(stock_prices) >= 200:
+            sma200 = stock_prices["Close"].rolling(200).mean().iloc[-1]
+            last_close = stock_prices["Close"].iloc[-1]
+            sma200_total += 1
+            if pd.notna(sma200) and last_close >= sma200:
+                sma200_above_count += 1
+                sma200_filtered.append(c)
+    # 市場幅チェック: SMA200超の銘柄が40%未満なら市場全体が弱い→スキップ
+    if sma200_total > 0:
+        breadth = sma200_above_count / sma200_total
+        if breadth < 0.40:
+            print(f"    市場幅不足（SMA200超: {sma200_above_count}/{sma200_total} = {breadth:.0%}）— スキップ")
+            return trades, capital
+
+    top_buy = sorted(sma200_filtered, key=lambda x: x.total_score, reverse=True)[:TOP_N]
+    # 最低スコア閾値: 低スコア銘柄は除外（無理に埋めない）
+    MIN_SCORE_THRESHOLD = 62.0
+    top_buy = [c for c in top_buy if c.total_score >= MIN_SCORE_THRESHOLD]
 
     if not top_buy:
-        print(f"    買い候補なし — スキップ")
+        print(f"    買い候補なし（閾値{MIN_SCORE_THRESHOLD}以上なし）— スキップ")
         return trades, capital
 
     # 均等配分（資金をTOP_N等分）
@@ -197,9 +240,13 @@ def simulate_single_date(
         remaining_capital -= cost
 
         # 売却: 保有中に日足High/LowでSL/TP判定 → 未達なら推奨日数後に決済
+        from src.config import SL_TP_ENABLED
         hold_days = c.recommended_hold_days if c.recommended_hold_days > 0 else 5
-        sl = c.stop_loss
-        tp = c.take_profit
+        sl = c.stop_loss if SL_TP_ENABLED else 0
+        tp = c.take_profit if SL_TP_ENABLED else 0
+        # -7%の最大損失キャップ（平均回帰に余裕を残しつつ大損失を防止）
+        sl = entry_price * 0.93
+        tp = 0  # TPも無効化（時間ベース出口で利益は十分捕捉可能）
         after_data = all_prices[
             (all_prices["Code"] == c.code)
             & (all_prices["Date"] > cutoff_dt)
@@ -279,21 +326,49 @@ def main():
     print(f"ポートフォリオシミュレーション: 初期資金{INITIAL_CAPITAL:,}円 × 10日付 × Top3")
     print("=" * 70)
 
+    # 設定値表示（A/Bテスト確認用）
+    from src.config import (SIGNAL_LOOKBACK_DAYS, VOLUME_SPIKE_RATIO,
+                            HOLD_DAYS_MEAN_REVERSION, STOP_LOSS_ATR_MULTIPLIER,
+                            ATR_RANGE_FILTER_ENABLED, VOL_RATIO_FILTER_ENABLED,
+                            SIGNAL_CONFLICT_FILTER_ENABLED)
+    print(f"[CONFIG] LOOKBACK={SIGNAL_LOOKBACK_DAYS} SPIKE={VOLUME_SPIKE_RATIO} "
+          f"HOLD_MR={HOLD_DAYS_MEAN_REVERSION} SL_ATR={STOP_LOSS_ATR_MULTIPLIER} "
+          f"ATR_RANGE={ATR_RANGE_FILTER_ENABLED} VOL_RATIO={VOL_RATIO_FILTER_ENABLED} "
+          f"SIG_CONFLICT={SIGNAL_CONFLICT_FILTER_ENABLED}")
+
     # ===== フェーズ1: データ準備 =====
     print(f"\n{'━' * 70}")
     print("フェーズ1: データ準備")
     print(f"{'━' * 70}")
 
-    print("\n[1/2] 銘柄一覧取得...")
-    stocks = fetch_jpx_stock_list()
-    codes = get_tradeable_codes(stocks)
-    print(f"  対象: {len(codes)}銘柄")
+    cache_path = os.path.join(os.path.dirname(__file__) or ".", "ab_data_cache.pkl")
+    if os.path.exists(cache_path):
+        print("\n[キャッシュ] データ読込中...")
+        import pickle
+        with open(cache_path, "rb") as f:
+            cached = pickle.load(f)
+        stocks = cached["stocks"]
+        all_prices = cached["prices"]
+        codes = cached["codes"]
+        print(f"  キャッシュ読込完了: {len(codes)}銘柄, {len(all_prices)}行")
+    else:
+        print("\n[1/2] 銘柄一覧取得...")
+        stocks = fetch_jpx_stock_list()
+        codes = get_tradeable_codes(stocks)
+        print(f"  対象: {len(codes)}銘柄")
 
-    print(f"\n[2/2] 5年間の株価データを一括ダウンロード...")
-    all_prices = download_all_prices(codes)
-    if all_prices.empty:
-        print("ERROR: 株価データ取得失敗")
-        return 1
+        print(f"\n[2/2] 5年間の株価データを一括ダウンロード...")
+        all_prices = download_all_prices(codes)
+        if all_prices.empty:
+            print("ERROR: 株価データ取得失敗")
+            return 1
+
+        # キャッシュ保存（A/Bテスト高速化用）
+        import pickle
+        with open(cache_path, "wb") as f:
+            pickle.dump({"stocks": stocks, "prices": all_prices, "codes": codes}, f)
+        print(f"  キャッシュ保存完了")
+
     print(f"  データ準備完了: {time.time()-t0:.0f}秒")
 
     dates = generate_random_dates(10)
